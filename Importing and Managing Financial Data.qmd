@@ -1,0 +1,585 @@
+---
+title: "TAREA 1"
+format: html
+editor: visual
+embed-resources: true
+---
+
+### Librerias
+
+```{r}
+rm(list=ls())  
+library(tseries)
+library(zoo)
+library(quantmod)
+library(outliers)
+library(dygraphs)
+library(forecast)
+library(moments)
+library(lmtest)
+library(ggplot2)
+library(FinTS)
+library(rugarch)
+library(magrittr)
+library(xts)
+source("hurst_new.R")
+# source("fbmSim.R")
+```
+
+### Carga de datos
+
+```{r}
+lista <- c("^IBEX",
+           "ACS.MC","ACX.MC","AMS.MC","ANA.MC","ANE.MC",
+           "BBVA.MC","BKT.MC","CABK.MC","CLNX.MC","COL.MC",
+           "AENA.MC","ELE.MC","ENG.MC","FDR.MC","FER.MC",
+           "GRF.MC","IAG.MC","IBE.MC","IDR.MC","ITX.MC",
+           "LOG.MC","MAP.MC","MEL.MC","MRL.MC","MTS.MC",
+           "NTGY.MC","RED.MC","REP.MC","ROVI.MC","SAB.MC",
+           "SAN.MC","SCYR.MC","SLR.MC","TEF.MC","UNI.MC")
+
+fecha_inicio <- as.Date("1990-01-01")
+
+merged_xts <- NULL
+
+for (TICKER in lista) {
+  aux <- getSymbols(
+    Symbols = TICKER,
+    from = fecha_inicio,
+    auto.assign = FALSE,
+    warnings = FALSE
+  )
+  
+  # columna Adjusted
+  adj <- Ad(aux)
+  colnames(adj) <- paste0(TICKER, "_Adj")
+  
+  # merge acumulativo
+  if (is.null(merged_xts)) {
+    merged_xts <- adj
+  } else {
+    merged_xts <- merge(merged_xts, adj, all = TRUE)
+  }
+}
+# pasamos a data.frame con la fecha como columna
+cartera <- data.frame(
+  date = index(merged_xts),
+  coredata(merged_xts)
+)
+
+cartera$date <- as.Date(cartera$date)
+
+tail(cartera)
+
+```
+
+### Informacion basica de cada activo
+
+```{r}
+#Numero de datos missing por activo
+lapply(cartera, function(x) {
+  data.frame(
+    N_Obs        = NROW(x),
+    NAs          = sum(is.na(x))
+  )
+})
+
+#Graficos para cada activo para ver si los activos con mas de 5% de negativos son al principio de la serie. Si es asi cambiamos adj por close
+activos <- names(cartera)[names(cartera) != "date"]
+
+plots <- lapply(activos, function(activo) {
+  serie_xts <- xts(cartera[[activo]], order.by = as.Date(cartera$date))
+  colnames(serie_xts) <- activo
+  
+  dygraph(serie_xts,
+          main = activo,
+          xlab = "Fecha",
+          ylab = "Precio ajustado") %>%
+    dyOptions(colors = "steelblue") %>%
+    dyRangeSelector()
+})
+
+plots
+```
+
+### Calculo de retornos logaritimicos
+
+```{r}
+
+# Nos quedamos con las columnas de precios (todas menos la primera)
+precios <- cartera[ , -1]
+
+# Aplicamos diff(log(x)) a cada columna
+rends <- as.data.frame(lapply(precios, function(x) diff(log(x))))
+
+# Añadimos la fecha (pierdes la primera por el diff)
+rends <- cbind(
+  date = cartera$date[-1],
+  rends
+)
+
+tail(rends)
+```
+
+### Analisis exploratorio de rendimientos
+
+```{r}
+# Si la primera columna es fecha, usa:
+# cols <- setdiff(names(rends), "date")
+# analisis_exploratorio <- lapply(cols, function(nom) { ... })
+
+analisis_exploratorio <- lapply(names(rends), function(nom) {
+  x <- rends[[nom]]
+  data.frame(
+    Activo   = nom,
+    Mean     = mean(x, na.rm = TRUE),
+    Median   = median(x, na.rm = TRUE),
+    SD       = sd(x, na.rm = TRUE),
+    Skewness = skewness(x, na.rm = TRUE),
+    Kurtosis = kurtosis(x, na.rm = TRUE)
+  )
+})
+
+# Unir todo en una sola tabla
+analisis_exploratorio <- do.call(rbind, analisis_exploratorio)
+
+analisis_exploratorio
+
+```
+
+### Deteccion de outliers
+
+```{r}
+rends_clean <- rends
+
+# aplicamos solo a las columnas numéricas (todas menos 'date')
+rends_clean[ , -1] <- lapply(names(rends)[-1], function(nm) {
+  x <- rends[[nm]]
+  
+  z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+  
+  # índices de outliers (> 5 sigmas), sin contar NAs
+  idx_out <- which(!is.na(z) & abs(z) > 5)
+  
+  cat("Activo:", nm, "\n")
+  cat("  Observaciones totales:", length(x), "\n")
+  cat("  Outliers (5σ) que se ponen a NA:", length(idx_out), "\n")
+  cat("  Porcentaje afectado:",
+      round(100 * length(idx_out) / sum(!is.na(x)), 3), "%\n\n")
+  
+  # creamos una copia y solo cambiamos los outliers a NA
+  x_clean <- x
+  x_clean[idx_out] <- NA
+  
+  x_clean
+})
+
+tail(rends_clean)
+```
+
+### Graficos descriptivos de los rendimientos
+
+```{r}
+cols_returns <- setdiff(names(rends_clean), "date") #COLUMNA DE LOS RENDIMIENTOS SIN FECHA
+
+
+# Función de gráficos para una sola columna de rendimientos
+plot_desc <- function(colname) {
+  TICKER  <- colname
+  returns <- rends_clean[[colname]]
+  
+  # Quitar NAs solo cuando haga falta para cálculos
+  m  <- mean(returns, na.rm = TRUE)
+  sd_ <- sd(returns, na.rm = TRUE)
+  
+  par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+  
+  # 1) Serie temporal
+  plot(returns,
+       main = paste(TICKER, "- Rendimientos"),
+       ylab = "Return",
+       type = "l")
+  
+  # 2) Histograma + densidad + normal teórica
+  hist(returns,
+       breaks = 50,
+       probability = TRUE,
+       main = "Histograma",
+       xlab = "Return",
+       col = "lightblue",
+       border = "white")
+  
+  lines(density(returns, na.rm = TRUE), col = "blue", lwd = 2)
+  curve(dnorm(x, mean = m, sd = sd_),
+        add = TRUE, col = "red", lwd = 2, lty = 2)
+  
+  # 3) Q-Q plot
+  qqnorm(returns, main = "Q-Q Plot")
+  qqline(returns, col = "red", lwd = 2)
+  
+  # 4) Serie con bandas ±2σ
+  plot(returns,
+       main = "Rendimientos con Bandas ±2σ",
+       ylab = "Return",
+       type = "l")
+  abline(h = m,           col = "blue", lty = 3, lwd = 2)
+  abline(h = m + 2 * sd_, col = "red",  lty = 2, lwd = 2)
+  abline(h = m - 2 * sd_, col = "red",  lty = 2, lwd = 2)
+  
+  par(mfrow = c(1, 1))
+  invisible(NULL)
+}
+
+invisible(lapply(cols_returns, plot_desc))
+```
+
+### Test de estacionariedad ADF/PP/KPSS
+
+```{r}
+# Función que hace los tests para un ticker (precios + rendimientos)
+tests_estacionariedad_ticker <- function(tk) {
+  # Extraer series
+  precio_limpio <- cartera[[tk]]
+  returns       <- rends_clean[[tk]]
+  
+  # Eliminar NAs para los tests
+  precio_limpio <- na.omit(precio_limpio)
+  returns       <- na.omit(returns)
+  
+  # --- Tests en precios ---
+  test_adf_precio   <- adf.test(precio_limpio)
+  test_pp_precio    <- pp.test(precio_limpio)
+  test_kpss_precio  <- kpss.test(precio_limpio, null = "Trend")
+  
+  # --- Tests en rendimientos ---
+  test_adf_returns  <- adf.test(returns)
+  test_pp_returns   <- pp.test(returns)
+  test_kpss_returns <- kpss.test(returns, null = "Level")
+  
+  estacionariedad <- data.frame(
+    Ticker   = tk,
+    Serie    = c("Precios", "Rendimientos"),
+    ADF_stat = c(test_adf_precio$statistic,  test_adf_returns$statistic),
+    ADF_pval = c(test_adf_precio$p.value,    test_adf_returns$p.value),
+    PP_stat  = c(test_pp_precio$statistic,   test_pp_returns$statistic),
+    PP_pval  = c(test_pp_precio$p.value,     test_pp_returns$p.value),
+    KPSS_stat = c(test_kpss_precio$statistic, test_kpss_returns$statistic),
+    KPSS_pval = c(test_kpss_precio$p.value,   test_kpss_returns$p.value)
+  )
+  
+  # Redondear
+  estacionariedad[, c("ADF_stat","ADF_pval","PP_stat","PP_pval","KPSS_stat","KPSS_pval")] <-
+    round(estacionariedad[, c("ADF_stat","ADF_pval","PP_stat","PP_pval","KPSS_stat","KPSS_pval")], 4)
+  
+  return(estacionariedad)
+}
+
+# Aplicar a todos los tickers
+lista_estac <- lapply(cols_returns, tests_estacionariedad_ticker)
+
+# Unir todo en un solo data.frame
+estacionariedad_todos <- do.call(rbind, lista_estac)
+
+print(estacionariedad_todos)
+```
+
+### Analisis de autocorrelacion ACF/PACF para los rendimientos
+
+```{r}
+# Función para una sola serie de rendimientos
+analiza_serie <- function(ticker) {
+  TICKER  <- ticker
+  returns <- rends_clean[[ticker]]
+  returns <- na.omit(returns)
+  
+  # 1) ggtsdisplay
+  ggtsdisplay(returns, main = paste(TICKER, "- Rendimientos"))
+  
+  # 2) Test Ljung-Box (lags 1:5)
+  ljung_box_rend <- data.frame(
+    Lag = 1:5,
+    Statistic = NA,
+    P_Value = NA
+  )
+  
+  for (i in 1:5) {
+    test <- Box.test(returns, lag = i, type = "Ljung-Box")
+    ljung_box_rend$Statistic[i] <- round(test$statistic, 4)
+    ljung_box_rend$P_Value[i]   <- round(test$p.value, 4)
+  }
+  
+  cat("\n===== ", TICKER, " =====\n")
+  print(ljung_box_rend)
+  cat("\n")
+  
+  invisible(NULL)
+}
+
+invisible(lapply(cols_returns, analiza_serie))
+
+```
+
+### Analisis de autocorrelacion ACF/PACF para los rendimientos al cuadrado
+
+```{r}
+analiza_varianza <- function(ticker) {
+  TICKER  <- ticker
+  returns <- rends_clean[[ticker]]
+  returns2 <- returns^2
+  returns2 <- na.omit(returns2)
+  
+  # Gráfico ts + ACF + PACF de rendimientos²
+  ggtsdisplay(returns2, main = paste(TICKER, "- Rendimientos²"))
+  
+  # Test Ljung-Box para varianza
+  lags_varianza <- c(1, 5, 10, 20, 30)
+  ljung_box_rend2 <- data.frame(
+    Lag = lags_varianza,
+    Statistic = NA,
+    P_Value = NA
+  )
+  
+  for (i in seq_along(lags_varianza)) {
+    test <- Box.test(returns2, lag = lags_varianza[i], type = "Ljung-Box")
+    ljung_box_rend2$Statistic[i] <- round(test$statistic, 4)
+    ljung_box_rend2$P_Value[i]   <- round(test$p.value, 4)
+  }
+  
+  cat("\n===== ", TICKER, " (Rendimientos²) =====\n")
+  print(ljung_box_rend2)
+  cat("\n")
+  
+  invisible(NULL)
+}
+
+invisible(lapply(cols_returns, analiza_varianza))
+```
+
+### Exponente de Hurst
+
+```{r}
+hurst_for_column <- function(ticker) {
+  returns <- na.omit(rends_clean[[ticker]])
+  n <- length(returns)
+  
+  # Si hay pocos datos, devolvemos NA
+  if (n < 200) {
+    return(data.frame(
+      Ticker = ticker,
+      H_Estimate = NA,
+      SE = NA,
+      t_stat = NA,
+      p_value = NA
+    ))
+  }
+  
+  set.seed(42)
+  
+  log_lags <- seq(1, log(n/2), length.out = 30)
+  hurst_vals <- numeric(length(log_lags))
+  
+  for(i in seq_along(log_lags)) {
+    lag <- round(exp(log_lags[i]))
+    if(lag < n) {
+      m <- n %/% lag
+      rs_vals <- numeric(m)
+      for(j in 1:m) {
+        idx <- ((j-1)*lag+1):(j*lag)
+        if(length(idx) == lag) {
+          segment <- returns[idx]
+          mean_seg <- mean(segment)
+          Y <- cumsum(segment - mean_seg)
+          R <- max(Y) - min(Y)
+          S <- sd(segment)
+          if(S > 0) rs_vals[j] <- R/S
+        }
+      }
+      hurst_vals[i] <- mean(rs_vals)
+    }
+  }
+  
+  valid_idx <- which(hurst_vals > 0)
+  if(length(valid_idx) < 5) {
+    return(data.frame(
+      Ticker = ticker,
+      H_Estimate = NA,
+      SE = NA,
+      t_stat = NA,
+      p_value = NA
+    ))
+  }
+  
+  hurst_fit <- lm(log(hurst_vals[valid_idx]) ~ log_lags[valid_idx])
+  h_estimate <- hurst_fit$coef[2]
+  se <- summary(hurst_fit)$coef[2,2]
+  
+  t_stat <- (h_estimate - 0.5) / se
+  p_value <- 2 * pt(abs(t_stat), n - 2, lower.tail = FALSE)
+  
+  # --- Return ---
+  data.frame(
+    Ticker = ticker,
+    H_Estimate = round(h_estimate, 4),
+    SE = round(se, 4),
+    t_stat = round(t_stat, 4),
+    p_value = round(p_value, 4)
+  )
+}
+
+hurst_results_list <- lapply(cols_returns, hurst_for_column)
+
+hurst_results <- do.call(rbind, hurst_results_list)
+
+print(hurst_results)
+```
+
+### Test BDS
+
+```{r}
+bds_for_column <- function(ticker) {
+  returns <- na.omit(rends_clean[[ticker]])
+  
+  # Por seguridad, si hay muy pocos datos, devolvemos NA
+  if (length(returns) < 50) {
+    return(data.frame(
+      Ticker = ticker,
+      BDS_Statistic = NA,
+      BDS_pvalue = NA
+    ))
+  }
+  
+  test_bds <- bds.test(as.numeric(returns), m = 2, eps = sd(returns))
+  
+  data.frame(
+    Ticker = ticker,
+    BDS_Statistic = round(as.numeric(test_bds$statistic[1]), 4),
+    BDS_pvalue   = round(as.numeric(test_bds$p.value[1]), 4)
+  )
+}
+
+# Aplicar a todas las columnas
+bds_list <- lapply(cols_returns, bds_for_column)
+
+# Unir resultados
+bds_results <- do.call(rbind, bds_list)
+
+print(bds_results)
+```
+
+### Test de normalidad Jaque-Bera
+
+```{r}
+# Función para una columna de rendimientos
+normalidad_for_column <- function(ticker) {
+  returns <- na.omit(rends_clean[[ticker]])
+  
+  # Por seguridad, si hay muy pocos datos devolvemos NA
+  if (length(returns) < 30) {
+    return(data.frame(
+      Ticker = ticker,
+      JB_Statistic = NA,
+      JB_pvalue = NA,
+      Pct_fuera_2sigma = NA
+    ))
+  }
+  
+  # Test Jarque-Bera
+  test_jb <- jarque.bera.test(as.numeric(returns))
+  
+  # Porcentaje fuera de ±2σ
+  m  <- mean(returns)
+  s  <- sd(returns)
+  pct_fuera <- mean(abs(returns - m) > 2*s) * 100
+  
+  data.frame(
+    Ticker = ticker,
+    JB_Statistic = round(as.numeric(test_jb$statistic), 4),
+    JB_pvalue = round(as.numeric(test_jb$p.value), 4),
+    Pct_fuera_2sigma = round(pct_fuera, 2)
+  )
+}
+
+# Aplicar a todas las columnas
+normalidad_list <- lapply(cols_returns, normalidad_for_column)
+
+# Unir resultados en un solo data.frame
+normalidad_results <- do.call(rbind, normalidad_list)
+
+print(normalidad_results)
+
+```
+
+## Modelos recomendado
+
+```{r}
+sugerir_modelos <- function(ticker) {
+  TICKER  <- ticker
+  returns <- na.omit(rends_clean[[ticker]])
+  returns2 <- returns^2
+  
+  # Ljung-Box en rendimientos (lags 1:5)
+  lags_media <- 1:5
+  ljung_box_rend <- data.frame(
+    Lag = lags_media,
+    Statistic = NA,
+    P_Value = NA
+  )
+  for (i in seq_along(lags_media)) {
+    test <- Box.test(returns, lag = lags_media[i], type = "Ljung-Box")
+    ljung_box_rend$Statistic[i] <- round(test$statistic, 4)
+    ljung_box_rend$P_Value[i]   <- round(test$p.value, 4)
+  }
+  
+  # Ljung-Box en rendimientos^2 (lags 1,5,10,20,30)
+  lags_varianza <- c(1, 5, 10, 20, 30)
+  ljung_box_rend2 <- data.frame(
+    Lag = lags_varianza,
+    Statistic = NA,
+    P_Value = NA
+  )
+  for (i in seq_along(lags_varianza)) {
+    test <- Box.test(returns2, lag = lags_varianza[i], type = "Ljung-Box")
+    ljung_box_rend2$Statistic[i] <- round(test$statistic, 4)
+    ljung_box_rend2$P_Value[i]   <- round(test$p.value, 4)
+  }
+  
+  cat("\n=============================================\n")
+  cat("SUGERENCIA DE MODELOS PARA:", TICKER, "\n")
+  cat("=============================================\n")
+  
+  # MEDIA: usamos el p-valor del lag 5 en rendimientos
+  if (ljung_box_rend$P_Value[5] < 0.05) {
+    cat("MEDIA: Hay autocorrelación → Considerar ARMA\n")
+    cat("  - Revisar ACF y PACF de rendimientos\n")
+    cat("  - ACF decae exponencial + PACF corte → AR(p)\n")
+    cat("  - ACF corte + PACF decae exponencial → MA(q)\n")
+    cat("  - Ambos decaen exponencial → ARMA(p,q)\n")
+  } else {
+    cat("MEDIA: No hay autocorrelación → Modelo de media constante OK\n")
+  }
+  
+  # VARIANZA: usamos el p-valor del lag 10 en rendimientos^2 (3ª fila)
+  if (ljung_box_rend2$P_Value[3] < 0.05) {
+    cat("\nVARIANZA: Efectos ARCH/GARCH detectados\n")
+    cat("  - Revisar ACF y PACF de rendimientos²\n")
+    cat("  - Considerar GARCH(1,1) como punto de partida\n")
+    cat("  - Si asimetría → TGARCH o EGARCH\n")
+  } else {
+    cat("\nVARIANZA: No hay efectos ARCH → Varianza constante OK\n")
+  }
+  
+  invisible(NULL)
+}
+
+# Aplicar a cada activo (cada columna de rendimientos)
+invisible(lapply(cols_returns, sugerir_modelos))
+```
+
+## Guardar la cartera de rendimientos en limpio
+
+```{r}
+rens_limpio_NONAs <- na.omit(rends_clean)
+write.csv(rends_clean, file = "rends_limpio.csv", row.names = FALSE)
+write.csv(rens_limpio_NONAs, file = "rens_limpio_NONAs.csv", row.names = FALSE)
+save(file = "rens_limpio_NONA", rens_limpio_NONAs)
+```
