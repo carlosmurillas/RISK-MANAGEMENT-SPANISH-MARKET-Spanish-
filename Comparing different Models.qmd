@@ -1,0 +1,551 @@
+---
+title: "Tarea 2.1"
+format: html
+editor: visual
+embed-resources: true
+---
+
+```{r}
+# Librerías
+library(tseries) 
+library(zoo) 
+library(outliers) 
+library(forecast)
+library(tseries) 
+library(urca)
+library(quantmod)
+library(lmtest)
+library(ggplot2)  
+library(rugarch)
+library(FinTS)
+```
+
+```{r}
+# Cargamos la serie de la Tarea 1
+load("rens_limpio_NONA") # Serie de rendimientos del activo REP
+rens_xts <- xts(rens_limpio_NONAs[ , -1], order.by = as.Date(rens_limpio_NONAs$date)) # transformamos los datos a xts
+BBVA <- rens_xts$BBVA.MC_Adj ### Seleccionamos nuestro activo BBVA
+```
+
+```{r}
+#  seleccionar la ventana de estimación 
+# Identificar el último mes
+ultimo_mes <- format((last(index(BBVA))), "%Y-%m")
+
+# Crear las dos series
+bbva_sep <- BBVA[ultimo_mes]
+bbva_est <- BBVA[!index(BBVA) %in% index(bbva_sep)]
+```
+
+## Escenario 1 : Ruido Blanco
+
+En este escenario, se supone que los rendimientos financieros siguen un proceso de **ruido blanco**, es decir, son valores independientes, con media constante y varianza constante. Esto implica que **no existe autocorrelación ni patrones predecibles** en los datos, y cualquier variación futura en los precios es completamente aleatoria.
+
+Bajo este supuesto, el mercado sería **plenamente eficiente en su forma débil**, ya que los precios reflejan toda la información disponible y no es posible obtener beneficios anormales mediante el análisis de datos pasados. Además, la volatilidad sería constante en el tiempo. Por ello, aunque el ruido blanco es un punto de partida teórico útil, rara vez describe de forma exacta a los mercados financieros
+
+```{r}
+mod.rb <- Arima(bbva_est,order=c(0,0,0))
+print(mod.rb)
+```
+
+### Diagnosis 1
+
+```{r}
+# Parametros
+coeftest(mod.rb)  # p-valor = 0.0008701 media = 0.00186726 
+```
+
+```{r}
+# Test de Ljunj-Box para los residuos
+checkresiduals(mod.rb)
+
+for (i in 1:5){
+  print(Box.test(residuals(mod.rb), lag = i, type = c("Ljung-Box")))
+}
+
+
+```
+
+```{r}
+
+bds.test(residuals(mod.rb), m=10)
+```
+
+```{r}
+# RESIDUOS AL CUADRADO
+rb.res <- residuals(mod.rb)
+ggtsdisplay(rb.res^2) 
+
+for (i in c(1,5,10,20,30)){
+  print(Box.test(rb.res^2, lag = i, type = c("Ljung-Box")))
+}
+```
+
+## Escenario 2
+
+En este escenario se supone que los rendimientos siguen un modelo **ARMA**, lo que implica que existe **dependencia temporal**: los valores pasados o los errores pasados influyen en el comportamiento actual. Esto genera autocorrelación y cierto grado de **predictibilidad** en la serie.
+
+A diferencia del ruido blanco, este comportamiento indica que el mercado **no es completamente eficiente en su forma débil**, ya que la información histórica puede utilizarse para anticipar parcialmente los rendimientos. Aunque estas dependencias suelen ser de corto plazo, su presencia cuestiona la idea de precios plenamente aleatorios y abre la puerta a estrategias basadas en modelos predictivos simples.
+
+```{r}
+# ESCENARIO 2: Modelo ARMA
+
+mod.arma_bic <- auto.arima(bbva_est, stationary=TRUE, seasonal=FALSE, ic="bic") 
+# stationary = Si, lo hemos estudiado en la tarea1.2 
+# seasonal = NO, no tiene componente estacional al ser datos diarios
+
+summary(mod.arma_bic) # ARMA(0,0), Ruido Blanco
+
+```
+
+```{r}
+mod.arma_aic <- auto.arima(bbva_est, stationary=TRUE, seasonal=FALSE, ic="aic")
+
+summary(mod.arma_aic) # ARMA(2,1)
+```
+
+Por parsimonia elegimos el modelo de BIC, ARMA(0,0)
+
+### Diagnosis 2
+
+```{r}
+# Parametros significativos 
+coeftest(mod.arma_bic)  # Todos los parámetros son significativos
+
+```
+
+```{r}
+# Residuos
+
+checkresiduals(mod.arma_bic)
+
+for (i in 1:5){
+  print(Box.test(residuals(mod.arma_bic), lag = i, type = c("Ljung-Box")))
+}
+```
+
+```{r}
+ArchTest(residuals(mod.arma_bic))
+
+```
+
+```{r}
+bds.test(residuals(mod.arma_bic), m = 10)
+# Se rechaza H0, entonces sabemos que los residuos tiene dependencia No lineal 
+#(sabemos que es no lineal porque lo lineal lo hemos modelizado con al ARMA)
+```
+
+```{r}
+# RESIDUOS AL CUADRADO
+ar.res <- residuals(mod.arma_bic)
+
+
+for (i in c(1,5,10,20,30)){
+  print(Box.test(ar.res^2, lag = i, type = c("Ljung-Box")))
+}
+# Los residuos al cuadrado tienen autocorrelación
+
+# Habría que ajustar un modelo GARCH para modelizar la varianza
+```
+
+## Escenario 3: Garch
+
+INTRODUCCION:
+
+Usamos **GARCH(m,r)** cuando:
+
+### **Los rendimientos rt NO tienen autocorrelación lineal**
+
+Es decir:
+
+-   El **correlograma ACF** de los rendimientos está dentro de las bandas.
+
+-   El **test de Ljung-Box (LB)** para rt NO es significativo para los primeros retardos (por ejemplo 5)
+
+Si se cumple esto, la media no tiene estructura temporal. Los rendimientos son ruido blanco en media, pero heterocedásticos.
+
+```{r}
+# GARCH(1,1) CON MEAN
+
+spec_garch11_m <- ugarchspec(
+  variance.model = list(model="sGARCH", garchOrder=c(1,1)),
+  mean.model = list(armaOrder=c(0,0), include.mean=TRUE),
+  distribution.model = "norm"
+)
+
+fit_garch11_m <- ugarchfit(spec=spec_garch11_m, data=bbva_est)
+fit_garch11_m
+```
+
+```{r}
+# GARCH(1,1) SIN MEAN 
+spec_garch11_nm <- ugarchspec(
+  variance.model = list(model="sGARCH", garchOrder=c(1,1)),
+  mean.model = list(armaOrder=c(0,0), include.mean=FALSE),
+  distribution.model = "norm"
+)
+
+fit_garch11_nm <- ugarchfit(spec=spec_garch11_nm, data=bbva_est-mean(bbva_est))
+fit_garch11_nm
+```
+
+```{r}
+############################# AUTO GARCH ########################################
+
+auto.garch <- function(data, max.p=3, max.q=3){
+  best_aic <- Inf
+  best_bic <- Inf
+  best_shibata <- Inf
+  best_hq <- Inf
+  
+  best_model_aic <- NULL
+  best_model_bic <- NULL
+  best_model_shibata <- NULL
+  best_model_hq <- NULL
+  
+  best_spec_aic <- NULL
+  best_spec_bic <- NULL
+  best_spec_shibata <- NULL
+  best_spec_hq <- NULL
+  
+  results <- list()
+  
+  for(p in 1:max.p){
+    for(q in 1:max.q){
+      #if(p == 0 && q == 0) next
+      
+      spec_tmp <- ugarchspec(
+        variance.model = list(model="sGARCH", garchOrder=c(p,q)),
+        mean.model = list(armaOrder=c(0,0), include.mean=TRUE),
+        distribution.model = "std" # Si no es normal poner std
+      )
+      
+      fit_tmp <- tryCatch({
+        ugarchfit(spec=spec_tmp, data=data, solver="hybrid")
+      }, error = function(e) NULL, warning = function(w) NULL)
+      
+      if(is.null(fit_tmp)) next
+      if(convergence(fit_tmp) != 0) next
+      
+      #four information criteria
+      ic <- infocriteria(fit_tmp)
+      aic_tmp <- ic[1]      # Akaike
+      bic_tmp <- ic[2]      # Bayes
+      shibata_tmp <- ic[3]  # Shibata
+      hq_tmp <- ic[4]       # Hannan-Quinn
+      
+      results[[paste0("GARCH_", p, "_", q)]] <- list(
+        fit = fit_tmp,
+        aic = aic_tmp,
+        bic = bic_tmp,
+        shibata = shibata_tmp,
+        hq = hq_tmp
+      )
+      
+      # AIC
+      if(aic_tmp < best_aic){
+        best_aic <- aic_tmp
+        best_model_aic <- fit_tmp
+        best_spec_aic <- c(p, q)
+      }
+      
+      #BIC
+      if(bic_tmp < best_bic){
+        best_bic <- bic_tmp
+        best_model_bic <- fit_tmp
+        best_spec_bic <- c(p, q)
+      }
+      
+      #Shibata
+      if(shibata_tmp < best_shibata){
+        best_shibata <- shibata_tmp
+        best_model_shibata <- fit_tmp
+        best_spec_shibata <- c(p, q)
+      }
+      
+      #Hannan-Quinn
+      if(hq_tmp < best_hq){
+        best_hq <- hq_tmp
+        best_model_hq <- fit_tmp
+        best_spec_hq <- c(p, q)
+      }
+    }
+  }
+  
+  return(list(
+    best_fit_aic = best_model_aic,
+    best_spec_aic = best_spec_aic,
+    best_aic_value = best_aic,
+    
+    best_fit_bic = best_model_bic,
+    best_spec_bic = best_spec_bic,
+    best_bic_value = best_bic,
+    
+    best_fit_shibata = best_model_shibata,
+    best_spec_shibata = best_spec_shibata,
+    best_shibata_value = best_shibata,
+    
+    best_fit_hq = best_model_hq,
+    best_spec_hq = best_spec_hq,
+    best_hq_value = best_hq,
+    
+    all_results = results
+  ))
+}
+
+# Run the function
+resultado_autogarch <- auto.garch(bbva_est, max.p=3, max.q=3)
+
+```
+
+```{r}
+resultado_autogarch$best_spec_aic
+resultado_autogarch$best_spec_bic
+resultado_autogarch$best_spec_shibata
+resultado_autogarch$best_spec_hq
+```
+
+Selección por parsimonia
+
+```{r}
+modelo_garch <- resultado_autogarch$best_fit_bic
+```
+
+### Diagnosis 3
+
+```{r}
+# Significancia de los parametros
+modelo_garch@fit$matcoef 
+```
+
+```{r}
+### Diagnosis
+modelo_garch
+```
+
+```{r}
+resid_std_garch <- residuals(modelo_garch, standardize = TRUE)
+```
+
+```{r}
+#### Test BDS #########
+bds.test(resid_std_garch,m=10) 
+```
+
+#### Normalidad de los residuos
+
+```{r}
+ks.test(resid_std_garch, "norm")
+jarque.bera.test(as.numeric(resid_std_garch))
+
+hist(resid_std_garch)
+qqnorm(resid_std_garch)
+qqline(resid_std_garch, col="red")
+```
+
+```{r}
+############# Media y Varaianza Incondicional ###############
+media_incon <- uncmean(modelo_garch)
+media_incon
+
+varianza_incondicional <-uncvariance(modelo_garch)
+varianza_incondicional
+
+```
+
+## Escenario 4: ARMA-Garch
+
+INTRODUCCION:
+
+Utilizamos **ARMA(p,q)-GARCH(m,r)** cuando:
+
+**Los rendimientos rt SÍ tienen autocorrelación lineal**
+
+Es decir:
+
+-   El **ACF o PACF** muestra picos significativos.
+
+-   O el **test de Ljung-Box (LB)** en rt **es significativo** y se rechaza la hipótesis de no autocorrelación
+
+Esto significa que la **media condicional µt no es constante**, y por tanto se necesita un componente ARMA para modelizarla.
+
+Existe la posibilidad de que los términos AR/MA **no aporten mejora suficiente de verosimilitud** frente a la penalización por complejidad (AIC/BIC) o bien cuando la aparente autocorrelación de la serie se debe en realidad a **volatilidad condicional** (clustering) y desaparece tras modelar la varianza con GARCH.
+
+```{r}
+auto.armagarch <- function(data, max.ar=2, max.ma=2, max.p=2, max.q=2){
+  best_aic <- Inf
+  best_bic <- Inf
+  best_shibata <- Inf
+  best_hq <- Inf
+  
+  best_model_aic <- NULL
+  best_model_bic <- NULL
+  best_model_shibata <- NULL
+  best_model_hq <- NULL
+  
+  best_spec_aic <- NULL
+  best_spec_bic <- NULL
+  best_spec_shibata <- NULL
+  best_spec_hq <- NULL
+  
+  results <- list()
+  
+  for(ar in 0:max.ar){
+    for(ma in 0:max.ma){
+      for(p in 1:max.p){
+        for(q in 1:max.q){
+          #if(p == 0 && q == 0) next
+          
+          spec_tmp <- ugarchspec(
+            variance.model = list(model="sGARCH", garchOrder=c(p,q)),
+            mean.model = list(armaOrder=c(ar,ma), include.mean=TRUE),
+            distribution.model = "std"
+          )
+          
+          fit_tmp <- tryCatch({
+            ugarchfit(spec=spec_tmp, data=data, solver="hybrid")
+          }, error = function(e) NULL, warning = function(w) NULL)
+          
+          if(is.null(fit_tmp)) next
+          if(convergence(fit_tmp) != 0) next
+          
+          # Extract all four information criteria
+          ic <- infocriteria(fit_tmp)
+          aic_tmp <- ic[1]      # Akaike
+          bic_tmp <- ic[2]      # Bayes
+          shibata_tmp <- ic[3]  # Shibata
+          hq_tmp <- ic[4]       # Hannan-Quinn
+          
+          model_name <- paste0("ARMA(", ar, ",", ma, ")_GARCH(", p, ",", q, ")")
+          results[[model_name]] <- list(
+            fit = fit_tmp,
+            aic = aic_tmp,
+            bic = bic_tmp,
+            shibata = shibata_tmp,
+            hq = hq_tmp
+          )
+          
+          # Track best model by AIC
+          if(aic_tmp < best_aic){
+            best_aic <- aic_tmp
+            best_model_aic <- fit_tmp
+            best_spec_aic <- c(ar, ma, p, q)
+          }
+          
+          # Track best model by BIC
+          if(bic_tmp < best_bic){
+            best_bic <- bic_tmp
+            best_model_bic <- fit_tmp
+            best_spec_bic <- c(ar, ma, p, q)
+          }
+          
+          # Track best model by Shibata
+          if(shibata_tmp < best_shibata){
+            best_shibata <- shibata_tmp
+            best_model_shibata <- fit_tmp
+            best_spec_shibata <- c(ar, ma, p, q)
+          }
+          
+          # Track best model by Hannan-Quinn
+          if(hq_tmp < best_hq){
+            best_hq <- hq_tmp
+            best_model_hq <- fit_tmp
+            best_spec_hq <- c(ar, ma, p, q)
+          }
+        }
+      }
+    }
+  }
+  
+  return(list(
+    best_fit_aic = best_model_aic,
+    best_spec_aic = best_spec_aic,
+    best_aic_value = best_aic,
+    
+    best_fit_bic = best_model_bic,
+    best_spec_bic = best_spec_bic,
+    best_bic_value = best_bic,
+    
+    best_fit_shibata = best_model_shibata,
+    best_spec_shibata = best_spec_shibata,
+    best_shibata_value = best_shibata,
+    
+    best_fit_hq = best_model_hq,
+    best_spec_hq = best_spec_hq,
+    best_hq_value = best_hq,
+    
+    all_results = results
+  ))
+}
+
+# Run the function
+resultado_autoarmagarch <- auto.armagarch(bbva_est, 
+                                          max.ar=2, max.ma=2, 
+                                          max.p=2, max.q=2)
+```
+
+La funcion auto.armagarch() busca la combinación (p,q,m,r) que minimiza AIC/BIC (u otros criterios).
+
+```{r}
+resultado_autoarmagarch$best_spec_aic
+resultado_autoarmagarch$best_spec_bic
+resultado_autoarmagarch$best_spec_shibata
+resultado_autoarmagarch$best_spec_hq
+```
+
+```{r}
+modelo_armagarch <- resultado_autoarmagarch$best_fit_aic 
+
+```
+
+```{r}
+####################### PARAMETROS ##############
+modelo_armagarch@fit$matcoef 
+```
+
+### Diagnosis 4
+
+```{r}
+modelo_armagarch
+```
+
+```{r}
+############ Residuos estandarizados ####################
+
+resid_std_armagarch <- residuals(modelo_armagarch, standardize = TRUE)
+```
+
+```{r}
+############## TEST BDS ##############
+bds.test(resid_std_armagarch,m=10) 
+```
+
+#### Normalidad de los residuos
+
+```{r}
+
+ks.test(resid_std_armagarch, "norm")
+jarque.bera.test(as.numeric(resid_std_armagarch))
+
+hist(resid_std_armagarch)
+qqnorm(resid_std_armagarch)
+qqline(resid_std_armagarch, col="red")
+```
+
+```{r}
+################### MEDIA Y VARIANZA incondicionales ##############
+
+media_incondicional <- uncmean(modelo_armagarch)
+media_incondicional
+
+varianza_incondicional <- uncvariance(modelo_armagarch)
+varianza_incondicional
+```
+
+```{r}
+################### MEDIA Y VARIANZA CONDICIONALES ##############
+
+media_condicional <- fitted(modelo_armagarch)
+
+varianza_condicional <- sigma(modelo_armagarch)^2
+```
