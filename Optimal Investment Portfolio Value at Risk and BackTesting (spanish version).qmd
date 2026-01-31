@@ -1,0 +1,1589 @@
+---
+title: "Script Tema 3"
+author: "Amalia Lobo, Carlos Murillas, Filip Balik, Daniel Garcia, Javier Sarzosa"
+format: html
+editor: visual
+---
+
+# Carteras óptimas
+
+```{r}
+rm(list = ls())
+```
+
+## Librerias
+
+```{r}
+library(tseries)
+library(fPortfolio)
+library(zoo)
+library(outliers)
+library(ggplot2)
+library(rugarch)
+library(fTrading)
+library(RiskPortfolios) 
+library(stats)
+library(lmtest)
+```
+
+## Datos
+
+Para comenzar vamos a cargar los precios y los rendimientos limpios realizados en la tareas anteriores.
+
+```{r}
+load('precios.unknown')
+load('cartera1.rds')
+```
+
+Ahora vamos ha realizar una selección para que la cartera este distribuida en 5 sectores principales, para conseguir una diversificación sectorial:
+
+BBVA: Sector financiero
+
+MAPFRE: Sector financiero de seguros
+
+IBERDROLA: Energía
+
+INDITEX: Consumo
+
+CELLNEX: Infraestrucutras
+
+### Precios
+
+Cargamos los **precios**:
+
+```{r}
+bbva_p <- cartera$BBVA.MC_Adj
+map_p <- cartera$MAP.MC_Adj
+ibe_p <- cartera$IBE.MC_Adj
+itx_p <- cartera$ITX.MC_Adj
+clnx_p <- cartera$CLNX.MC_Adj
+```
+
+Vamos a visualizar la trayectoria de los precios ajustados de los cinco activos de la cartera.
+
+```{r}
+cartera <- cbind(bbva_p, map_p, ibe_p, itx_p, clnx_p)
+```
+
+```{r}
+plot.zoo(cartera, plot.type="single",col=c("darkblue","red","darkgreen","orangered4","plum3", "orange"))
+legend( 'topleft','groups',c("BBVA", "MAP", "IBE", "ITX","CLNX"), lty=c(1), cex=0.5, lwd=c(1,1,1,1,1), col=c("darkblue","red","darkgreen","orangered4","plum3", "orange"))
+
+```
+
+### Rendimientos
+
+Para el cálculo de parámetros como la media y la matriz de covarianzas, es necesario trabajar con renidimientos y no con precios, ya que estos son estacionarios y permiten la modelización.
+
+```{r}
+bbva_r <- cartera1$BBVA.MC.Adjusted
+map_r <- cartera1$MAP.MC.Adjusted
+ibe_r <- cartera1$IBE.MC.Adjusted
+itx_r <- cartera1$ITX.MC.Adjusted
+clnx_r <- cartera1$CLNX.MC.Adjusted
+```
+
+El objetivo principal de una cartera diversificada no es solo que cada activo tenga un buen rendimiento, sino que se muevan de forma diferente para **mitigar el riesgo global**.
+
+Por ello, es el momento de formar la cartera donde están todos los rendimientos. Estos tienen que tener la misma ventana temporal para poder medir la covarianza y la correlación y saber como se mueven los activos entre sí.
+
+```{r}
+rendimientos <- merge(bbva_r, map_r, ibe_r, itx_r, clnx_r, all=FALSE)
+rendimientos <- rendimientos[complete.cases(rendimientos),] 
+rendimientos
+```
+
+Por motivos de practicidad vamos a cambiar los bombres de los activos de la cartera.\
+
+```{r}
+nuevos_nombres <- c("BBVA", "MAPFRE", "IBERDROLA", "INDITEX", "CELLNEX")
+colnames(rendimientos) <- nuevos_nombres
+```
+
+## Análisis de la cartera
+
+Operando sobre los rendimientos podemos realizar un análisis estadístico sobre los mismos, podiendo calcular:
+
+#### Rendimiento esperado
+
+```{r}
+colMeans(rendimientos, na.rm=TRUE)
+```
+
+#### Volatilidad
+
+Es la **medida del riesgo** del activo o cartera, cuantificada por la desviación estándar de sus rendimientos.
+
+```{r}
+colSds(rendimientos)
+```
+
+#### Matriz de Varianzas y Covarianzas
+
+Es un requisito matemático que asegura que el **riesgo (varianza) de la cartera siempre será positivo** y que la matriz se pueda invertir para encontrar los pesos óptimos.
+
+```{r}
+varCar<-cov(rendimientos)
+varCar
+#Miramos si es definida positiva
+
+checkDP <- isPositiveDefinite(varCar)
+checkDP
+```
+
+### Matriz de Correlaciones
+
+Una tabla que muestra la **fuerza y dirección de la relación lineal** entre los rendimientos de cada par de activos
+
+```{r}
+pf.corr <- cov2cor(varCar)
+pf.corr
+```
+
+## Cartera óptima
+
+## Cartera óptima (Markowitz + Sharpe)
+
+Ya están seleccionados los 5 activos de la cartera, sin embargo, no todos van a tener el mismo pesos dentro de la cartera de inversión. Normalmente, se le asigna un quinto del capital en cada uno (cartera equiponderada), aunque no siempre suele ser la mejor opción.
+
+### Activo libre de riesgo
+
+Para construir la cartera necesitamos el activo libre de riesgo para construir la Línea del Mercado de Capitales. En este activo no existe incertidumbre sobre su valor final ni sobre su rendimiento ya que que sabe en todo momento cuál será su valor final. Normalmente, tienen baja volatilidad.
+
+Los datos con los que vamos a trabajar van a tener rendimeintos 'mensuales' y tienen que coincidir con los de la cartera, por lo que hay que transformarlos.
+
+```{r}
+portfolioSpec()
+espcartera<-portfolioSpec()
+```
+
+Ahora debemos determinar el activo libre de riesgo.
+
+https://www.euribordiario.es/
+
+Para encontrar el valor de los rendimientos diarios ya que lo tenemos anualizdo:
+
+```{r}
+rd <- (1+0.0254)^(1/252)-1
+rd
+```
+
+### Frontera eficiente
+
+Ahora ya se pueden construir todas las combinaciones de posibles carteras. La mejor cartera será la que se encuentre en la cartera óptima de la frontera de eficiencia.
+
+```{r}
+setRiskFreeRate(espcartera)<- rd
+setNFrontierPoints(espcartera) <- 100
+```
+
+Ahora determinamos la frontera y la visualizamos.
+
+```{r}
+Frontera <- portfolioFrontier(as.timeSeries(rendimientos),spec=espcartera ) 
+```
+
+```{r}
+
+tailoredFrontierPlot(object=Frontera)
+```
+
+-   Aquí encontramos las diferente combinaciones de carteras posibles con estos activos, simuladas con el método de Monte Carlo.
+
+    -   Círculos de colores: Activos individuales, donde todo el peso de la cartera se le da a un mismo activo.
+
+    -   Circulos azules: Diferentes combinaciones de carteras en las que se ofrecen pesos diferentes por cada activo.
+
+    La función envolvente determina la frontera eficiente:
+
+    -   Puntos grises: Carteras que NO son óptimas, hay mejores combinaciones con mejor rendimeinto y mismo riesgo.
+
+    -   Puntos negros: Carteras óptimas para ese riesgo asumido.
+
+    La **Línea del Mercado de Capitales (CML)**, anclada por el activo libre de riesgo, determina la combinación más eficiente de riesgo-rendimiento. El **Portafolio de Tangencia** (solución tangente a la Frontera) es el portafolio óptimo, ya que **maximiza el Ratio de Sharpe** (rendimiento por unidad de riesgo).
+
+    En el gráfico, la **Frontera Eficiente** es la curva superior. Cualquier portafolio por debajo de esta curva es ineficiente y descartable, dado que existen combinaciones con mayor rendimiento para el mismo riesgo.
+
+    Los puntos clave a evaluar en la Frontera Eficiente son:
+
+    1.  **Portafolio de Mínima Varianza (PMV):** El punto más a la izquierda, que **minimiza el riesgo** (varianza).
+
+    2.  **Portafolio de Tangencia (PT):** El punto que ofrece la **máxima relación de rendimiento/riesgo**, siendo la elección ideal para inversores que buscan la eficiencia. mejor ratio de sarphe
+
+    En este caso el activo de la cartera Iberdrola cae exactamente en la frontera eficiente, por lo que la mayoría del peso de la cartera recaerá sobre este activo, si no es en su totalidad.
+
+    La **Línea del Mercado de Capitales (CML)**, anclada por el activo libre de riesgo, determina la combinación más eficiente de riesgo-rendimiento. El **Portafolio de Tangencia** (solución tangente a la Frontera) es el portafolio óptimo, ya que **maximiza el Ratio de Sharpe** (rendimiento por unidad de riesgo).
+
+    En el gráfico, la **Frontera Eficiente** es la curva superior. Cualquier portafolio por debajo de esta curva es ineficiente y descartable, dado que existen combinaciones con mayor rendimiento para el mismo riesgo.
+
+    Los puntos clave a evaluar en la Frontera Eficiente son:
+
+    1.  **Portafolio de Mínima Varianza (PMV):** El punto más a la izquierda, que **minimiza el riesgo** (varianza).
+
+    2.  **Portafolio de Tangencia (PT):** El punto que ofrece la **máxima relación de rendimiento/riesgo**, siendo la elección ideal para inversores que buscan la eficiencia.
+
+    En última instancia, la selección final dependerá del perfil de riesgo del inversor, combinando el PT con el activo libre de riesgo.
+
+    ## Pesos de la cartera tangente
+
+    La tangente indica el rendimiento del mercado y el crecimiento esperado del mercado a medida que se asume un mayor riesgo.
+
+#### Pesos de la cartera tangente
+
+La tangente indica el rendimiento del mercado y el crecimiento esperado del mercado a medida que se asume un mayor riesgo. (efectivamente da gran parte del peso a la Iberdorola)
+
+```{r}
+soluciontg<-tangencyPortfolio(as.timeSeries(rendimientos),spec=espcartera, constraints = "LongOnly")
+soluciontg
+
+pesostg<-soluciontg@portfolio@portfolio$weights
+pesostg
+```
+
+### Pesos de la cartera de mínima varianza
+
+Cartera que indica la mínima varianza (punto rojo)
+
+```{r}
+solucionminvar<-minvariancePortfolio(as.timeSeries(rendimientos),spec=espcartera, constraints = "LongOnly")
+solucionminvar
+pesosminvar<-solucionminvar@portfolio@portfolio$weights
+pesosminvar
+```
+
+```{r}
+ret<-rendimientos
+```
+
+## Betas 
+
+Para comenzar tengo que cargar los rendimientos de Ibex35
+
+```{r}
+ibex_r <- cartera1$IBEX.Adjusted
+```
+
+```{r}
+cartera_i <- merge(bbva_r, map_r, ibe_r, itx_r, clnx_r, ibex_r, all = FALSE) 
+cartera_i <- cartera_i[complete.cases(cartera_i),] 
+cartera_i
+```
+
+Por motivos de practicidad vamos a modificar los nombres de las variables.
+
+```{r}
+nuevos_nombres <- c("BBVA", "MAPFRE", "IBERDROLA", "INDITEX", "CELLNEX", "IBEX")
+colnames(cartera_i) <- nuevos_nombres
+
+head(cartera_i)
+```
+
+Ahora, vamos a separar y preparar las series de rendimientos.
+
+```{r}
+# Rendimientos del Mercado (IBEX 35)
+R_mercado <- cartera_i$IBEX
+
+# Matriz de Rendimientos de los ACTIVOS (sin el IBEX)
+R_matriz_activos <- cartera_i[, -ncol(cartera_i)] 
+R_matriz_activos <- as.matrix(R_matriz_activos)
+```
+
+Calculamos el rendimiento de la cartera óptima.
+
+```{r}
+pesos_matriz <- matrix(pesostg, ncol = 1) 
+R_cartera <- R_matriz_activos %*% pesos_matriz
+colnames(R_cartera) <- "R_CARTERA"
+```
+
+Unimos el rendimiento de la cartera y el IBEX para luego hacer la regresión.
+
+```{r}
+datos_beta_final <- data.frame(IBEX = R_mercado, R_CARTERA = R_cartera)
+datos_beta_final <- na.omit(datos_beta_final)
+```
+
+##### Beta individual
+
+```{r}
+# Inicializar un data.frame para guardar los resultados
+beta_analisis <- data.frame(
+  Activo = colnames(R_matriz_activos), 
+  Alpha = NA, 
+  p_value_Alpha = NA, 
+  Beta = NA
+)
+
+for (i in 1:ncol(R_matriz_activos)) {
+  
+  activo_name <- colnames(R_matriz_activos)[i]
+  
+  # 1. Realizar el Modelo de Regresión
+  modelo_reg <- lm(R_matriz_activos[, i] ~ R_mercado)
+  
+  # 2. Realizar el test de coeficientes (para p-values y errores estándar)
+  test_result <- coeftest(modelo_reg)
+  
+  # 3. Guardar los resultados en el data frame de análisis
+  # El intercepto (Alpha) es la Fila 1, Columna 1 (Estimate)
+  beta_analisis[i, "Alpha"] <- test_result[1, 1] 
+  
+  # El p-value del Alpha es la Fila 1, Columna 4 (Pr(>|t|))
+  beta_analisis[i, "p_value_Alpha"] <- test_result[1, 4] 
+  
+  # El Beta es la Fila 2, Columna 1 (Estimate)
+  beta_analisis[i, "Beta"] <- test_result[2, 1] 
+  
+  # También puedes ver el resultado completo del test para cada activo
+  cat("\n--- Resultados para", activo_name, "---\n")
+  print(test_result) 
+}
+
+print(beta_analisis)
+```
+
+En cuanto a la interpretación de los betas individuales:
+
+BBVA: Es el activo más agresivo de la cartera. Su riesgo es un 43% superior al del mercado, lo que implica que amplifica tanto las subidas como las bajadas del índice de referencia.
+
+MAPFRE e INDITEX: Presentan un compartamiento cercano al del mercado (beta=1), moviendose de forma casi proporcional al índice.
+
+IBERDROLA y CELLNEX: Son activos defensivos. Su volatilidad es significativamente menor a la del mercado, lo que ayuda a reducir el riesgo toal de la cartera.
+
+En cuanto a la significatividad de los parametros:
+
+IBERDROLA es el único activo de la tabla con un pvalor estadisticamente significativo, lo que indica que no es azar y que ha generado un valor extra al inversor. Por el contrario, el resto de activoa no tienen evidencia suficiente para afirmar que hayan generado un exceso de retorno.
+
+##### Beta cartera
+
+Opción 1:
+
+```{r}
+# Regresión: R_CARTERA ~ IBEX
+modelo_cartera_ibex <- lm(datos_beta_final$R_CARTERA ~ datos_beta_final$IBEX)
+beta_p_1 <- coef(modelo_cartera_ibex)[2]
+
+cat("Beta de la Cartera (Método 1 - Regresión MCO):", round(beta_p_1, 4), "\n")
+```
+
+Opción 2:
+
+```{r}
+cov_cartera_ibex <- cov(datos_beta_final$R_CARTERA, datos_beta_final$IBEX)
+var_ibex <- var(datos_beta_final$IBEX)
+beta_p_2 <- cov_cartera_ibex / var_ibex
+
+cat("Beta de la Cartera (Método 2 - Fórmula Cov/Var):", round(beta_p_2, 4), "\n")
+```
+
+Opción 3:
+
+```{r}
+beta_p_3 <- sum(pesostg * beta_analisis$Beta)
+
+cat("Beta de la Cartera (Método 3 - Suma Ponderada):", round(beta_p_3, 4), "\n")
+```
+
+El valor de que la cartera sea de 0.7094 indica que la inversión global de la cartera es defensivo en comparación con el mercado del Ibex 35. La cartera subestima los movimientos del mercado en un 29%, lo que prioriza la preservación del capitañ frente a la volatilidad.
+
+La cartera es aproximadamente un 29% menos volátil que el índice de referencia.
+
+Si el mercado sube un 10% se espera que la cartera suba un 7.09%, en caso de que caiga un 10% solo caería un 7.09%.
+
+# VaR backtesting
+
+l **Valor en Riesgo (VaR)** se utiliza para estimar la **pérdida potencial máxima** que se puede esperar que ocurra durante un horizonte temporal determinado y con un cierto nivel de confianza estadística, en este caaso 5%.
+
+Lo utilizamos para comparar cuanto riesgo se esta asumiendo al invertir en cada uno de los activos o entre diferentes carteras.
+
+### Vector de medias
+
+Calcula el **rendimiento promedio** (media) para **cada activo** en la cartera.
+
+```{r}
+pf.mean <-colMeans(ret)
+pf.mean
+```
+
+### Matriz de Varianzas-Covarianzas
+
+Esta matriz cuadrada contiene las varianzas de cada activo en la diagonal y las covarianzas entre pares de activos en los elementos fuera de la diagonal.
+
+```{r}
+pf.var <- cov(ret)
+pf.var
+```
+
+Ahora, comprobamos que la matriz sea definida positiva para garantizar que el riesgo total de la cartera nunca sea negativo.
+
+```{r}
+checkDP <- isPositiveDefinite(pf.var)
+checkDP
+```
+
+Ahora vamos a calcular la desviación típica de cada activo, volatilidad.
+
+```{r}
+pf.sd <- diag(pf.var)^(1/2)
+pf.sd
+```
+
+### Matriz de Correlaciones
+
+Las correlaciones normalizan las covarianzas para que se encuentren entre el intervalo -1 y 1.
+
+```{r}
+pf.corr <- cov2cor(pf.var)
+pf.corr
+```
+
+### Cálculo de Pesos
+
+Esta es la definición de los valores que se emplean por igual en todos los casos de los modelos paramétricos.
+
+Es necesario calcular los pesos de la cartera óptima, en este caso vamos a suponer que en esta cartera todos los activos tienen el mismo peso "Cartera Equiponderada".
+
+```{r}
+K <- ncol(ret)
+K
+n <- nrow(ret) 
+n
+
+#Si furan equiponderados 
+#w.pf <- rep(1/K,K)  
+#w.pf
+#Si fueran por minima varianza
+#w.pf <-pesosminvar  
+#w.pf
+
+w.pf<-pesostg
+w.pf
+```
+
+## 1.VaR UNIVARIANTE para cada activo
+
+-   V0 es el valor de la posicion de tu cartera V0=1000€
+
+-   Za es el valor del cuantil de la distribucion normal asociado al nivel de confianza Z0.05 = -1.6448 Es negativo porque representa la perdida (parte izquierda de la normal)
+
+-   Horizonte temporal calculamos la perdida para mañana
+
+Los rendimientos se distribuyen siguiento una normal. Al suponer que se cumple la hipótesis de mercados eficientes: mu=0 y sigma=cte.
+
+```{r}
+alfa <- 0.05                      # Nivel de significación
+V0 <- 1000                        # Valor inicial
+z_ns <- qnorm(alfa,mean=0,sd=1)   # Percentil N(0,1)
+z_ns
+#tiempo <- 1                       # Horizonte temporal (1 día)
+```
+
+-   **Se distribuyen los rendimientos como en una normal**
+
+```{r}
+for (col in names(ret)) {
+  df <- data.frame(Retorno = ret[, col])
+  
+  print(
+    ggplot(df, aes(x = ret)) +
+      geom_histogram(aes(y = after_stat(density)),
+                     bins = 40, fill = "lightblue", color = "black", alpha = .3) +
+      geom_density(color = "red") +
+      ggtitle(paste("Histograma y densidad de", col))
+  )
+}
+```
+
+### N(0,σ-cte)
+
+-   Los rendimientos se distribuyen como una N(mu,sigma)
+
+-   Suponemos que se cumple la hipótesis de mercados eficientes: mu=0; sigma=cte (varianza constante)
+
+$$
+VaR_{1} = - V_0 \, \sigma \, Z_{\alpha}
+$$
+
+```{r}
+var.by.p1 <- -V0*pf.sd*z_ns
+var.by.p1
+σ_cte<-var.by.p1
+```
+
+### N(0,σt-EWMA)
+
+-   Varianza no constante(dinamica) -\> metodo EWMA (JP-Morgan)
+
+-   El enfoque asume que los rendimientos de los activos siguen una distribución normal con **parámetros dinámicos** ($r_{activo} \sim N(0,\sigma_t)$), donde la volatilidad ($\sigma_t$) cambia con el tiempo ($t$).
+
+-   $\sigma_t^2 = (1-\lambda)\, y_{t-1}^2 + \lambda\, \sigma_{t-1}^2$
+
+-   **Matriz de Covarianza EWMA:** Se utiliza `covEstimation()` para obtener la matriz del último periodo ($t$), la cual incorpora la volatilidad dinámica.
+
+-   **Volatilidad Individual:** La varianza EWMA ($\sigma_{activo_{EWMA}}$) de cada activo se extrae de la **diagonal** de esta matriz.
+
+-   **Verificación:** Es crucial comprobar que la matriz resultante sea **Definida Positiva** para garantizar que las varianzas de los activos sean positivas y consistentes.
+
+$$ VaR_{2} = - V_0 \, \sigma_{t+1} \, Z_{\alpha} $$
+
+```{r}
+#Calculamos una Ewma para cada varianaz del activo
+vcov.ewma <- covEstimation(ret, control = list(type = 'ewma', lambda = 0.94)) # Default: lambda=0.94
+vcov.ewma
+checkDP <- isPositiveDefinite(vcov.ewma)
+checkDP
+
+#Calculamos el VaR para cada activo
+var.by.p2 <- -V0*sqrt(diag(vcov.ewma)) *z_ns  # FILA 2
+var.by.p2
+
+σt_EWMA<-var.by.p2
+```
+
+### N(0,σt-GARCH(1,1))
+
+-   Varianza dinamica
+
+-   Garch con media y sin parte AR
+
+GARCH(1,1) es otro método paramétrico que modela la **Varianza Condicional** del activo. Este modelo utiliza las varianzas históricas y los choques pasados para **predecir la volatilidad** en el periodo siguiente ($t+1$). Se utiliza el orden (1,1) por ser el más adecuado para muchos activos financieros, y esta predicción de volatilidad se usa para calcular el VaR correspondiente.
+
+$$ VaR_{t+1}(\alpha) = -V_0 \, \sigma_{t+1} \, Z_{\alpha}, \qquad \sigma_{t+1}^2 = \omega + \alpha a_t^2 + \beta \sigma_t^2 $$
+
+VaR para cada activo
+
+```{r}
+vol.p3 <- numeric(K)  
+
+model.spec <- ugarchspec(variance.model=list(model="sGARCH", garchOrder=c(1,1)),
+                         mean.model=list(armaOrder=c(0,0), include.mean=TRUE),
+                        distribution.model="norm")
+# Loop para cada activo
+for(k in 1:K){
+  model.fit <- ugarchfit(model.spec,ret[,k])
+  forecast <- ugarchforecast(model.fit, n.ahead=1,ret[,k])  
+  vol.p3[k] <- as.numeric(sigma(forecast))
+}
+vol.p3
+
+# VaR individual en T+1 para cada activo
+var.ind.p3 <- -V0*vol.p3*z_ns   # FILA 3
+var.ind.p3
+
+σt_GARCH11<-var.ind.p3
+```
+
+### N(0,σt-bestGARCH)
+
+El procedimiento es el mismo que para GARCH(1,1): se modela la **Varianza Condicional** para obtener la predicción de volatilidad en el periodo siguiente ($t+1$), **sin modelar explícitamente la estructura de la media**. Esta predicción de volatilidad ($\sigma_{t+1}$) específica para cada activo se utiliza para calcular su VaR.
+
+Esta funcion calcula el mejor garch para cada uno de los rendimientos del Garch(1,1) al Garch(2,2) sin contar el Garch(1,1)
+
+```{r}
+retACT1 <- ret[,1]
+retACT2 <- ret[,2]
+retACT3 <- ret[,3]
+retACT4 <- ret[,4]
+retACT5 <- ret[,5]
+
+
+
+autogarch <- function(series, V0 = 1000, z_ns = qnorm(0.05)) {
+
+  series <- as.numeric(series)
+
+  orders <- list(c(1,2), c(2,1), c(2,2))
+
+  resultados <- data.frame(
+    Modelo   = character(),
+    p        = integer(),
+    q        = integer(),
+    AIC      = numeric(),
+    BIC      = numeric(),
+    Shibata  = numeric(),
+    HQ       = numeric(),
+    Var_t1   = numeric(),   # VARIANZA condicional
+    VaR      = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  for (ord in orders) {
+
+    p <- ord[1]
+    q <- ord[2]
+
+    spec <- ugarchspec(
+      variance.model = list(model="sGARCH", garchOrder=c(p,q)),
+      mean.model     = list(armaOrder=c(0,0), include.mean=TRUE),
+      distribution.model = "norm"
+    )
+
+    fit <- tryCatch(
+      suppressWarnings(ugarchfit(spec, series, solver="hybrid")),
+      error = function(e) NULL
+    )
+
+    if (is.null(fit)) next
+    if (convergence(fit) != 0) next
+
+    ic <- tryCatch(infocriteria(fit), error=function(e) NULL)
+    if (is.null(ic)) next
+
+    forecast <- ugarchforecast(fit, n.ahead = 1)
+
+    sigma_t1 <- sigma(forecast)[1]
+    var_t1   <- sigma_t1^2
+
+    VaR_tmp <- -V0 * sigma_t1 * z_ns
+
+    resultados <- rbind(
+      resultados,
+      data.frame(
+        Modelo   = paste0("GARCH(", p, ",", q, ")"),
+        p        = p,
+        q        = q,
+        AIC      = ic[1],
+        BIC      = ic[2],
+        Shibata  = ic[3],
+        HQ       = ic[4],
+        Var_t1   = var_t1,   # ← AQUÍ
+        VaR      = VaR_tmp,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+
+  return(resultados)
+}
+```
+
+Esta funcion saca todos los criterios para cada modelo y selecciona el VaR que tenga el infracriterio mas pequeño para cada activo.
+
+```{r}
+#Todos los criterios para cada modelo 
+autogarch(retACT1)
+autogarch(retACT2)
+autogarch(retACT3)
+autogarch(retACT4)
+autogarch(retACT5)
+#Selecciona el criterio mas pequeño y nos da el VaR para cada modelo 
+minimo_criterios <- function(resultados) {
+  
+  # Vector con los criterios
+  criterios <- c("AIC", "BIC", "Shibata", "HQ")
+  
+  # Obtener el mínimo de cada columna
+  minimos <- sapply(resultados[criterios], min)
+  
+  # Detectar cuál es el más pequeño
+  criterio_ganador <- names(which.min(minimos))
+  valor_minimo <- minimos[criterio_ganador]
+  
+  # Localizar la fila del modelo ganador
+  fila_ganadora <- resultados[which.min(resultados[[criterio_ganador]]), ]
+  
+  return(
+    VaR = fila_ganadora[, ncol(resultados)]
+  )
+}
+
+#resACX
+res1 <- autogarch(retACT1)
+res2 <- autogarch(retACT2)
+res3 <- autogarch(retACT3)
+res4 <- autogarch(retACT4)
+res5 <- autogarch(retACT5)
+
+
+VaR.best.garch<-c(minimo_criterios(res1),minimo_criterios(res2),minimo_criterios(res3),minimo_criterios(res4),minimo_criterios(res5))
+VaR.best.garch
+σt_bestGARCH<-VaR.best.garch
+```
+
+### Simulación Histórica (SH)
+
+-   Metodo de simulación histórica (no admite una varianza dinámica, es constante)
+
+-   Estima una distribución empírica (o no paramétrica) y se calcula un percentil
+
+-   q(rt) Es el cuantil empirico aalpha de los rendimientos (normalmente negativo)
+
+$$
+VaR_{\alpha}^{HS} = -V_0 \, q_{\alpha}(r_t)
+$$
+
+```{r}
+qret.s1 <- numeric(K)  
+for (k in 1:K){
+  #qret.np1[k] <- quantile(ret[,k] ,1-alfa)   # Percentil de las ganancias   
+  qret.s1[k] <- quantile(ret[,k] ,alfa)       # Percentil de las pérdidas
+}
+
+qret.s1
+
+var.s1.IND <- -V0*qret.s1
+var.s1.IND
+
+Simulación.Histórica<- var.s1.IND
+```
+
+### SH-Bootsrap
+
+Estima el VaR mediante **remuestreo con reemplazo** de los datos de rendimientos históricos. Se generan múltiples **réplicas** de la muestra original, se calcula el cuantil de interés (VaR) para cada réplica, y finalmente, se utiliza la **media de estos cuantiles** para obtener la estimación final del VaR.
+
+-   Igual que el metodo anterior pero se re-muestrean los rendimientos con remplazo
+
+-   Se generan B muestras bootstrap a partir de los rendimientos rt con reemplazo para cada muestra se calcula el cuantil a
+
+$$
+VaR_{\alpha}^{BS}
+=
+- V_0 \cdot 
+\frac{1}{B}
+\sum_{i=1}^{B} q_{\alpha}\!\left( x^{(i)} \right)
+$$
+
+```{r}
+qret.s2 <- numeric(K)  
+for (k in 1:K){
+  set.seed(3141592) 
+  B <-1000
+  qret.boot <- numeric(B)  
+    for (b in 1:B){
+      xboot <- sample(as.vector(ret[,k]),n,replace=T)  
+      #qret.boot[b] <- quantile(xboot,1-alfa)  # Percentil de las ganancias  
+      qret.boot[b] <- quantile(xboot,alfa)     # Percentil de las pérdidas
+    } 
+  qret.s2[k] <- mean(qret.boot)       
+}
+
+# Percentil estimado para todos los activos
+qret.s2
+
+# Calculo el VaR(t+1)=VaR(t) porque no se puede hacer forecasting
+var.s2.IND <- -V0*qret.s2
+var.s2.IND
+
+SH.Bootsrap<-var.s2.IND
+```
+
+### Monte Carlo
+
+Genera nuevos valores de rendimiento mediante **simulación de miles de escenarios** basados en un proceso estocástico definido. Tras obtener una gran cantidad de escenarios simulados, se calcula el VaR **asumiendo una distribución específica** (como la Normal) para estimar los parámetros necesarios (media y desviación típica) y encontrar el cuantil correspondiente.
+
+-   Asumimos que rt\~N(mu,sigma2), necesitamos estimar "mu" y "sigma2"ç
+
+$$
+VaR_{\alpha}^{MC}
+=
+- V_0 \, q_{\alpha}\!\left( r^{(i)} \right)
+$$
+
+```{r}
+qret.mc <- numeric(K)  
+for (k in 1:K){
+  set.seed(3141592) 
+  n.sim <- 1000
+  qret.mc.i <- numeric(n.sim) 
+  for (i.sim in 1:n.sim){
+    # Step 1.: simulate a sample from a Normal distribution with mean "mu"	and standard deviation "sigma"
+   # x.i <- rnorm(n,mean=pf.mean[k],sd=pf.sd[k])
+     x.i <- rnorm(n,mean=0,sd=pf.sd[k])
+    # Step 2.: Calcular el estimador del cuantil en la muestra simulada
+    #qret.mc.i[i.sim] <- quantile(x.i,1-alfa)  # Percentil de las ganancias
+    qret.mc.i[i.sim] <- quantile(x.i,alfa)     # Percentil de las pérdidas
+  }
+  qret.mc[k] <- mean(qret.mc.i)       
+}
+
+# Vector con el percentil_MC para cada uno de los activos
+qret.mc
+
+# Step 2.: Calculamos el VaR(t+1)=VaR(t)
+var.s3.IND <- -V0*qret.mc
+var.s3.IND
+
+Monte.carlo<-var.s3.IND
+```
+
+------------------------------------------------------------------------
+
+## TABLA VaR UNIVARIANTE (EXCEL1)
+
+```{r}
+library(tidyr)
+library(dplyr)
+
+tabla <- data.frame(σ_cte, σt_EWMA, σt_GARCH11, σt_bestGARCH, Simulación.Histórica, SH.Bootsrap, Monte.carlo)
+
+tabla$Activo <- rownames(tabla)
+rownames(tabla) <- NULL
+
+tabla_larga <- tabla %>% 
+  pivot_longer(cols = -Activo, names_to = "VaR INDIVIDUAL", values_to = "Valor")
+
+tabla_pivot <- tabla_larga %>%
+  pivot_wider(names_from = Activo, values_from = Valor)
+
+tabla_pivot
+```
+
+------------------------------------------------------------------------
+
+# 2.VaR CARTERA (Univarainte σp)
+
+-   Calculamos rp con los pesos de C2 tangente (pesostg)
+
+-   En este caso tratamos la cartera como si fuese un activo univariante.
+
+```{r}
+rp <- ret%*%w.pf  # Vector de rendimientos de la cartera: 3909x5 * 5x1= 3909x1
+head(rp)
+
+```
+
+$$ r_p = w^{\top} r $$
+
+$$ \sigma_p = sd(r_p) $$
+
+$$
+VaR_p = -V_0 \, Z_{\alpha} \, \sigma_p
+$$
+
+-   $w^{\top}$= El vector de pesos transpuesta
+
+-   $r$ = la matriz de rendimientos
+
+### N(0,σp-cte)
+
+```{r}
+sigma.rp <- sd(rp)
+sigma.rp
+
+var.rp.p1 <- -V0*sigma.rp*z_ns
+var.rp.p1
+
+σp_cte<-c(sigma.rp,var.rp.p1
+)
+```
+
+### N(0,σp-EWMA)
+
+$$
+VaR_{p} = - V_0 \, \sigma_{p} \, Z_{\alpha}
+$$
+
+```{r}
+# Enfoque univariante: rp
+lambda <- 0.94        # Norma técnica
+varEWMA <- rep(NA, n) # create a vector to hold variance for each t
+S <- sigma.rp^2      # Sample variance calculated with the whole sample
+varEWMA[1] <- S         # For t=1, select the sample variance
+for(i in 2:n){
+  S <- lambda*S+(1-lambda)*as.numeric(rp[i-1])^2 # It doesn't work if zoo object
+  varEWMA[i] <- S
+}
+
+# Pensar en EWMA cuando hay constante (slides clase). Seria (retACT1 [i-1]-mu)
+# ¿Cómo sería si es mu(t) en lugar de mu? 
+
+plot(varEWMA,type='l',lty=1,col=2,ylab="ACX VAR-EWMA")
+legend("top","EWMA",lty=1,col=2,bty="n",cex=0.7)
+
+# Como quiero calcular VaR(t) cojo el último valor calculado de la varianza condicional
+# ¿Cómo acceder al último valor de la volatilidad calculado? 
+vol.din.rp <- sqrt(varEWMA[length(varEWMA)])
+vol.din.rp
+var.rp.p2 <- -V0*vol.din.rp *z_ns  # FILA 2
+var.rp.p2
+
+σp_EWMA<-c(vol.din.rp
+,var.rp.p2)
+```
+
+### N(0,σp-GARCH1,1)
+
+```{r}
+# Ajustar a rp un GARCH(1,1) con media
+model.fit.pf <- ugarchfit(model.spec, rp)
+forecast.pf <- ugarchforecast(model.fit.pf, n.ahead=1)
+sigma_rp <- sigma(forecast.pf)
+sigma_rp
+VaR_rp_p3 <- -V0 * sigma_rp * z_ns
+VaR_rp_p3
+
+σp_GARCH11<-c(sigma_rp,VaR_rp_p3)
+```
+
+### N(0,σp-bestGARCH)
+
+```{r}
+res <- autogarch(rp)
+
+VaRbestGarchrp<-res %>% 
+  select(Var_t1, VaR) %>% 
+  filter(VaR == minimo_criterios(res))
+
+VaRbestGarchrp
+σp_bestGARCH<-c(sqrt(VaRbestGarchrp[,1]), VaRbestGarchrp[,2])
+```
+
+### Simulación Histórica (SH)
+
+```{r}
+qret.pf.s1 <- quantile(ret%*%w.pf,alfa)      # Percentil de las pérdidas
+
+# Step 2.: Calculamos el VaR
+var.pf.s1 <- -V0*qret.pf.s1
+var.pf.s1 
+
+Simulación.Histórica <- c("x",var.pf.s1 
+)
+```
+
+### SH-Bootsrap
+
+```{r}
+set.seed(3141592) 
+qret.pf.boot <- numeric(B)  
+B <-1000
+for (b in 1:B){
+  pf.boot <- sample(ret%*%w.pf,n,replace=T)   # REMUESTREO DE LA CARTERA
+  qret.pf.boot[b] <- quantile(pf.boot,alfa) 
+}
+
+qret.pf.s2 <- mean(qret.pf.boot)       
+
+# Step 2.: Calculamos el VaR(t+1)=VaR(t)
+var.pf.s2 <- -V0*qret.pf.s2
+var.pf.s2 
+
+SH.Bootsrap<-c("x",var.pf.s2 
+)
+```
+
+### Monte Carlo
+
+```{r}
+mu.pf <- t(w.pf)%*%pf.mean  # Matrix operation w'*r: 1xK * Kx1 = Tx1
+mu.pf
+var.pf <- t(w.pf)%*%pf.var%*%w.pf
+var.pf
+sd.pf <- sqrt(var.pf)
+sd.pf
+
+# Simulo la serie de rendimientos de la cartera R.pf(t)=lnP.pf(t)-lnP.pf(t-1)=e(t)~N(mu.pf,sigma.pf)
+set.seed(3141592)   
+n.simulations <- 1000
+qret.pf.mc <- numeric(n.simulations) #vector para guardar las estimaciones de los cuantiles
+for (i.sim in 1:n.simulations){
+  # Step 1.: simulate a sample from a Normal distribution with mean "mu"	and standard deviation "sigma"
+  xpf<- rnorm(n,mean=0,sd=sd.pf)
+  # Step 2.: Calcular el estimador del percentil en la muestra simulada
+  qret.pf.mc[i.sim]<- quantile(xpf,alfa) 
+}
+
+hist(qret.pf.mc)
+qret.pf.mc.est <- mean(qret.pf.mc)  #Media de los percentiles estimados con cada muestra simulada de MC
+qret.pf.mc.est
+
+# Step 2.: Calculamos el VaR(t+1)=VaR(t)
+var.pf.s3 <- -V0*qret.pf.mc.est
+var.pf.s3
+
+Monte.Carlo<-c(sd.pf,var.pf.s3
+
+)
+```
+
+------------------------------------------------------------------------
+
+## TABLA VaR CARTERA (UNIVARIANTE σp)
+
+```{r}
+tabla <- data.frame(σp_cte, σp_EWMA, σp_GARCH11, σp_bestGARCH, Simulación.Histórica, SH.Bootsrap, Monte.Carlo)
+
+# Convertir todas las columnas numéricas
+tabla <- as.data.frame(lapply(tabla, as.numeric))
+
+# Añadir columna "Medida"
+tabla$Medida <- rownames(tabla)
+rownames(tabla) <- NULL
+
+tabla_final_uni <- tabla %>%
+  pivot_longer(
+    cols = -Medida,
+    names_to = "VaR CARTERA",
+    values_to = "Valor"
+  ) %>%
+  pivot_wider(
+    names_from = Medida,
+    values_from = Valor
+  )
+
+# Renombrar columnas
+colnames(tabla_final_uni) <- c("VaR CARTERA", "σ-portfolio", "VaR(rp)")
+
+tabla_final_uni
+```
+
+------------------------------------------------------------------------
+
+## 3.VaR CARTERA MULTIVARIANTE (Matriz varianza-covarianza)
+
+-   Ahora vamos a utilizar la matriz de varianza-covarianza ($\Sigma$)
+
+Multiplicamos dos veces por W
+
+$$
+\Sigma =
+\begin{pmatrix}
+\operatorname{Var}(r_1) & \operatorname{Cov}(r_1, r_2) & \cdots & \operatorname{Cov}(r_1, r_K) \\
+\operatorname{Cov}(r_2, r_1) & \operatorname{Var}(r_2) & \cdots & \operatorname{Cov}(r_2, r_K) \\
+\vdots & \vdots & \ddots & \vdots \\
+\operatorname{Cov}(r_K, r_1) & \operatorname{Cov}(r_K, r_2) & \cdots & \operatorname{Var}(r_K)
+\end{pmatrix}
+$$
+
+### N(0,Σ-cte)
+
+-   En este caso la desviacion tipica dara lo mismo que en la univariante
+
+```{r}
+vcov.pf <- w.pf%*%pf.var%*%w.pf # Matriz  var-cov ponderada con los pesos
+sqrt(vcov.pf)
+var.pf.p1_rp <- -V0*sqrt(vcov.pf)*z_ns
+var.pf.p1_rp
+
+Σ_cte<-c(var.rp.p1
+,sqrt(vcov.pf), var.pf.p1_rp)
+```
+
+### N(0,Σt-EWMA)
+
+```{r}
+#Calculamos la varianza con la libreria covEstimations
+vcov.ewma <- covEstimation(ret, control = list(type = 'ewma', lambda = 0.94)) # Default: lambda=0.94
+
+vcov.pf2<-w.pf%*%vcov.ewma%*%w.pf
+sqrt(vcov.pf2)
+
+var.pf.p2_rp <- -V0*sqrt(vcov.pf2)*z_ns
+var.pf.p2_rp
+
+Σt_EWMA<-c(var.rp.p2,sqrt(vcov.pf2),var.pf.p2_rp)
+```
+
+### σit-GARCH(1,1)
+
+Para el garch vamos a calcular tres matrices de varianza-covarianza
+
+#### ID-σit
+
+-   ID-σit En esta la matriz varianza covarianza Σ sera la matriz identidad de tamaño 5. aqui consideramos que los activos son independientes (esto es muy poco comun en datos financieros)
+
+-   Vol.p3 es el vector de varianzas estimadas por garch(1,1)
+
+-   introducimos las varianzas en la diagonal de la matriz identidad
+
+```{r}
+vcoc.ID.11<-diag(5)
+diag(vcoc.ID.11)<-vol.p3^2 #rugarchdevuelve σ por eso elevamos al cuadrado
+vcov.pf3<-w.pf%*%vcoc.ID.11%*%w.pf
+sqrt(vcov.pf3)
+
+var.pf.p3_rp <- -V0*sqrt(vcov.pf3)*z_ns
+var.pf.p3_rp
+
+garch11_id<-c(VaR_rp_p3,sqrt(vcov.pf3),var.pf.p3_rp)
+```
+
+#### Muestral-σit
+
+-   Ahora nuestra matriz Σ sera la matriz var-covar muestral
+
+-   Le introducimos las varianzas en la diagonal de la matriz identidad
+
+```{r}
+pf.var.garch <- pf.var
+diag(pf.var.garch)<-vol.p3^2
+pf.var.garch
+
+vcov.pf <- w.pf%*%pf.var.garch%*%w.pf # Matriz  var-cov ponderada con los pesos
+sqrt(vcov.pf)
+
+var.pf.p4_rp <- -V0*sqrt(vcov.pf)*z_ns
+var.pf.p4_rp
+
+garch11_Σ<-c(VaR_rp_p3
+,sqrt(vcov.pf), var.pf.p4_rp)
+```
+
+#### EWMA-σit
+
+-   Ahora nuestra matriz Σ sera la matriz var-covar del EWMA sacada de covEstimations
+
+-   Le introducimos las varianzas en la diagonal de la matriz identidad
+
+```{r}
+# Matriz de varianzas-covarianzas EWMA
+vcov.garch <- vcov.ewma
+diag(vcov.garch)<-vol.p3^2 # Sustituyo los elementos de la diagonal por la varianza del GARCH
+vcov.ewma
+vcov.garch
+# La matriz de var-cov estimada, ¿es definida positiva?
+checkDP <- isPositiveDefinite(vcov.garch)
+checkDP
+
+vcov.pfew<-w.pf%*%vcov.garch%*%w.pf
+sqrt(vcov.pfew)
+# VaR cartera en T+1 
+var.p5.pf_rp <- -V0*sqrt(vcov.pfew)*z_ns
+var.p5.pf_rp
+
+
+garch11_Σew<-c(VaR_rp_p3
+,sqrt(vcov.pfew), var.p5.pf_rp)
+```
+
+### σit-bestGARCH
+
+-   Ahora para construir el vector de varianzas de nuestra funcion bestGarch. Como cada activo tiene un criterio distinto (AIC, BIC,..) creamos una funcion para sacar la varianza asociada a cada activo.
+
+-   El vector de varianzas es vol.best
+
+```{r}
+criterios <- function(resultados) {
+
+  criterios <- c("AIC", "BIC", "Shibata", "HQ")
+  minimos <- sapply(resultados[criterios], min)
+
+  criterio_ganador <- names(which.min(minimos))
+  fila_ganadora <- resultados[which.min(resultados[[criterio_ganador]]), ]
+
+  data.frame(
+    VaR    = fila_ganadora$VaR,
+    Var_t1 = fila_ganadora$Var_t1
+  )
+}
+
+
+out <- rbind(
+  criterios(res1),
+  criterios(res2),
+  criterios(res3),
+  criterios(res4),
+  criterios(res5)
+)
+
+out
+
+vol.best<-out[, "Var_t1"]
+vol.best
+```
+
+#### ID-σit
+
+```{r}
+vcoc.ID.best<-diag(5)
+diag(vcoc.ID.best)<-vol.best #ojo ya estan elevadas al cuadrado
+vcoc.ID.best
+vcov.pf6<-w.pf%*%vcoc.ID.best%*%w.pf
+sqrt(vcov.pf6)
+
+var.pf.p3_rp <- -V0*sqrt(vcov.pf6)*z_ns
+var.pf.p3_rp
+
+Bestgarch_id<-c(VaRbestGarchrp[,2],sqrt(vcov.pf6),var.pf.p3_rp)
+```
+
+#### Muestral-σit
+
+```{r}
+pf.var.garch2 <- pf.var
+diag(pf.var.garch2)<-vol.best
+pf.var.garch2
+
+vcov.pf7 <- w.pf%*%pf.var.garch2%*%w.pf # Matriz  var-cov ponderada con los pesos
+sqrt(vcov.pf7)
+
+var.pf.p7_rp <- -V0*sqrt(vcov.pf7)*z_ns
+var.pf.p7_rp
+
+Bestgarch_Σ<-c(VaRbestGarchrp[,2]
+,sqrt(vcov.pf7), var.pf.p7_rp)
+```
+
+#### EWMA-σit
+
+```{r}
+vcov.garch2 <- vcov.ewma
+diag(vcov.garch2)<-vol.best# Sustituyo los elementos de la diagonal por la varianza del GARCH
+vcov.ewma
+vcov.garch2
+# La matriz de var-cov estimada, ¿es definida positiva?
+checkDP <- isPositiveDefinite(vcov.garch2)
+checkDP
+
+vcov.pfew8<-w.pf%*%vcov.garch2%*%w.pf
+sqrt(vcov.pfew8)
+# VaR cartera en T+1 
+var.p8.pf_rp <- -V0*sqrt(vcov.pfew8)*z_ns
+var.p8.pf_rp
+
+
+BestGarch_Σew<-c(VaRbestGarchrp[,2]
+,sqrt(vcov.pfew8), var.p8.pf_rp)
+```
+
+------------------------------------------------------------------------
+
+## TABLA VaR CARTERA MULTIVARIANTE Σ
+
+```{r}
+tabla <- data.frame(
+  Σ_cte,
+  Σt_EWMA,
+  garch11_id,
+  garch11_Σ,
+  garch11_Σew,
+  Bestgarch_id,
+  Bestgarch_Σ,
+  BestGarch_Σew
+)
+
+tabla_t <- as.data.frame(t(tabla))
+
+colnames(tabla_t) <- c("Var(ri)","σ-portfolio", "VaR(rp)")
+
+tabla_final <- data.frame(
+  `VaR CARTERA` = rownames(tabla_t),
+  tabla_t,
+  row.names = NULL
+)
+
+tabla_final
+```
+
+------------------------------------------------------------------------
+
+## RESUMEN DE TODAS LAS TABLAS VaR 
+
+### Enfoque univariante 
+
+```{r}
+tabla_pivot
+```
+
+### Cartera Univariante σp
+
+```{r}
+tabla_final_uni
+```
+
+### Enfoque multivariante
+
+```{r}
+tabla_final
+```
+
+-   **Comparación de los VaR individuales para BBVA** desviación típica ($\sigma$):
+
+    -   **VaR** $\sigma$ cte (35.01): Es el valor más alto de la tabla para BBVA. Al asumir una volatilidad constante para todo el periodo histórico, no captura la calma reciente del mercado, penalizando el activo con una estimación de riesgo muy conservadora y posiblemente "estancada" en promedios antiguos. Por eso expresa la maxima perdida potencial de entre todos los modelos
+
+    -   **VaR** $\sigma$t EWMA (22.66): Presenta una reducción significativa respecto al constante. La metodología EWMA, da más peso a los datos recientes. El hecho de que sea menor sugiere que la volatilidad actual de BBVA es más baja que su promedio histórico de largo plazo.
+
+    -   **VaR GARCH11 (25.07) y BestGARCH (25.09):** Ambos modelos ofrecen resultados casi idénticos y se sitúan en un punto intermedio. GARCH es más robusto que EWMA al considerar el fenómeno de "reversión a la media", lo que explica por qué su estimación es ligeramente más prudente (más alta) que la de EWMA pero mucho más realista que la constante.
+
+    -   **Simulación Histórica (32.64) y Bootstrap (32.54):** Ambos arrojan valores altos y muy similares entre sí. Estos métodos no asumen una distribución normal (son no paramétricos), sino que usan los cambios reales del pasado. Al ser valores altos, indican que BBVA ha tenido "colas pesadas" (tipico en series financieras) o eventos de pérdida extrema en su histórico que estos métodos capturan mejor que los modelos paramétricos simples.
+
+    -   **Monte Carlo (34.97):** Arroja un resultado muy cercano al modelo de volatilidad constante. Esto suele ocurrir cuando la simulación de Monte Carlo se calibra usando la desviación típica histórica completa sin ajustes de volatilidad reciente, replicando así el comportamiento del modelo $\sigma$ constante.
+
+-   **Comparación de las carteras univariantes y multivariantes:**
+
+    -   **Varianza constante:** LLama la atencion que el VaR para enfoques univariantes y multivariantes de la cartera sea el mismo. Esto es porque si utilizas la misma ventana de datos históricos para ambos métodos, la varianza de la suma (univariante) es identicamente igual a la suma de las varianzas y covarianzas ponderadas (multivariante).
+
+    -   **Efecto Diversificación:** En modelos dinámicos como **EWMA**, el VaR multivariante (10.99) es menor que el univariante (11.45). Esto significa que el modelo multivariante está captando que los activos no caen todos al mismo tiempo con la misma intensidad, lo que "suaviza" el riesgo real de la cartera.
+
+    -   **Estabilidad en GARCH:** Los valores de GARCH en el enfoque univariante son muy estables (13.37). En el multivariante, vemos ligeras variaciones (13.18 vs 13.86) dependiendo de la técnica de agregación, lo que indica que el riesgo de la cartera es sensible a cómo modelamos la relación entre las acciones.
+
+    -   **Simulación vs. Paramétrico:** El enfoque univariante te permite usar Simulación Histórica y Bootstrap fácilmente (valores alrededor de 17.7), técnicas que son mucho más complejas de implementar fielmente en un entorno multivariante sin perder las correlaciones no lineales.
+
+-   **Diferencia del VaR de la cartera y el VaR individual:**
+
+    -   **Efecto de la diversificación:** Si observamos el modelo de $\sigma$ cte, los VaR individuales (BBVA: 35.01, MAPFRE: 26.84, etc.) son todos superiores al VaR de la cartera, que se sitúa en **20.62**. Este valor de 20.62 es incluso inferior al VaR individuales del activo menos riesgos (Iberdrola: 20.85). Esto demuestra que, al no estar los activos perfectamenre correlacionados, las pérdicasd de uno tienden a compensar con movimientos de otros.
+
+    -   **El papel de las correlaciones:** La modelización de las correlaciones es el núcleo del enfoque multivariante, ya que determina la magnitud del beneficio por diversificación. Mientras que los modelos **GARCH** muestran una mayor sensibilidad al riesgo al integrar estructuras de dependencia reales que elevan el VaR ante posibles contagios en momentos de estrés, el modelo **EWMA** ofrece la visión más optimista con un VaR de **10.99**. Este último resultado refleja que la correlación reciente es baja, logrando reducir el riesgo de la cartera a menos de la mitad del VaR individual de activos como **BBVA** y validando así una gestión dinámica del riesgo.
+
+------------------------------------------------------------------------
+
+# Back Testing
+
+-   Vamos a comprobar si nuestro VaR que he pronosticado ex falla exactamente el numero de veces que deberia
+
+-   Para un VaR del 5% se espera fallar 5 de cada 100 dias
+
+-   hacemos el backtesting para el activo BBVA
+
+-   En el **backtesting del VaR**, una **violación** ocurre cuando **la pérdida real supera el VaR estimado** para ese día.
+
+La violación en el día (t+1) ocurre si:
+
+$$
+r_{t+1} < -\text{VaR}_t
+$$
+
+La variable indicadora de violación se define como:
+
+$$
+I_t =
+\begin{cases}
+1 & \text{si hay violación} \\
+0 & \text{si no hay violación}
+\end{cases}
+$$
+
+-   Si falla menos (5%) veces MAL -\> Hemos inmobilizado mas dinero del que deberiamos y no podemos invertirlo (perdiendo beneficios)
+
+-   Si falla mas (5%) veces MAL -\> Tienes poco capital de cobertura y no estas protegido en perdidas grandes (quiebra)
+
+### Ventanas
+
+-   **WE=(estimation window):** nº de observaciones usadas para estimar el modelo
+
+-   **WT (testing window)**: nº de observaciones donde **evalúas el VaR**
+
+```{r}
+WE <- 1000   # estimation window length
+p <- 0.05    # probability (=alfa)
+portfolio_value <- 1  # portfolio value (=V0)
+```
+
+### Crea una matriz NA,s
+
+```{r}
+VaR <- matrix(nrow=length(retACT1 ),ncol=4)   # 4 models to calculate VaR
+head(VaR)
+tail(VaR)
+```
+
+### Modelo EWMA
+
+```{r}
+## EWMA setup
+lambda <- 0.94
+# CONDICIÓN INICIAL para el primer valor de la varianza
+# Por ejemplo, cálculo la VaR inicial con los 30 primeros valores
+s11 <- var(retACT1 [1:30])  
+s11
+for(t in 2:WE) s11<-lambda*s11+(1-lambda)*as.numeric(retACT1 [t-1])^2   
+# s11 para la posición 1000 (no nos interesa almacenar, solo s11[WE])
+```
+
+### Modelo Garch
+
+```{r}
+#Se especifica un GARCH(1,1) puro
+spec <- ugarchspec(variance.model = list( garchOrder = c(1, 1)),
+                   mean.model = list( armaOrder = c(0,0),include.mean = TRUE))
+#No incluye media, s.e. no considera desviaciones con respecto a la media
+```
+
+### Rolling Forecast
+
+El **rolling forecast en el backtesting del VaR** consiste en recalcular el VaR de forma dinámica utilizando únicamente información pasada para **predecir el riesgo del día siguiente**. Tras observar el retorno real, la ventana de datos se desplaza hacia delante y el proceso se repite. De este modo, las predicciones son siempre **ex ante** y evitan el uso de información futura.
+
+-   Esta parte implementa el modelo rolling one-step ahead forecast para el VaR
+
+-   Cada día t, usando solo la información hasta t−1,
+
+-   **Estimas el VaR para el día** t con distintos modelos.
+
+```{r}
+start_time <- Sys.time()
+for (t in (WE+1):length(retACT1 )){
+  cat(paste0(t,"\n")) # Si quiero imprimir iteraciones en pantalla: iteración 1 t=1001  
+  t1 <- t-WE;         # start of the data window: iteración 1: t1=1001-1000=1
+  t2 <- t-1;          # end of the data window: iteración 1: t2=1001-1=1000
+  window <- retACT1 [t1:t2] # data for estimation;  [1:1000] [2 1001]...[3349  3350]
+  s11<-lambda*s11+(1-lambda)*as.numeric(retACT1 [t-1])^2  # Está usando s11[1000] y r[1000]
+  VaR[t,1] <- -qnorm(p) * sqrt(s11) * portfolio_value   # EWMA
+  VaR[t,2] <- -sd(window) * qnorm(p)*portfolio_value    # MA=Moving Average (var no constante)
+  VaR[t,3] <- -quantile(window,p)*portfolio_value       # HS
+  modfit <- ugarchfit(spec = spec, data = window,solver="hybrid")
+# Caso 3: rt=at, at=sigma*et
+# sigma2(t)=omega  + alpha*r(t-1)^2 + beta*sigma2(t-1)
+  modfor <- ugarchforecast(modfit, n.ahead=1,data=window)  
+  VaR[t,4] <- -sigma(modfor) * qnorm(p) * portfolio_value # GARCH(1,1)
+}
+
+end_time <- Sys.time()
+print(end_time - start_time)
+
+head(VaR)
+tail(VaR)
+```
+
+### Ratio de violaciones
+
+$$
+VR = \frac{\text{Observed number of violations}}{\text{Expected number of violations}}
+$$
+
+Para cada observación se analiza el rendimiento del activo y se verifica si la pérdida supera o no el valor previamente estimado, lo que da lugar a una secuencia binaria de valores 1 y 0.
+
+Si el modelo es adecuado, la proporción de ocasiones en las que la pérdida excede el nivel estimado debe situarse en torno al 5%. Si este porcentaje es superior, indicaría un riesgo de quiebra. Sin embargo, un número menor de fallos tampoco es deseable, ya que el valor en riesgo representa fondos que deben mantenerse como reserva desde la perspectiva de una entidad financiera. Esto supone capital inmovilizado que no puede destinarse a otros usos, implicando una cobertura excesiva.
+
+-   Contamos los casos en los que el rendimiento es menor que el VaR
+
+-   Interpretacion del modelo:
+
++--------------+--------------------------------------------+----------------------------------------------+
+| VR           | Interpretación                             |                                              |
++==============+============================================+==============================================+
+| ≈ 1          | modelo bien calibrado                      |                                              |
++--------------+--------------------------------------------+----------------------------------------------+
+| \> 1         | VaR demasiado pequeño(subestima el riesgo) | mayor riesgo de **subestimar el VaR**        |
++--------------+--------------------------------------------+----------------------------------------------+
+| \< 1         | VaR demasiado conservador                  | suelen tener **menos violaciones** (VR \< 1) |
++--------------+--------------------------------------------+----------------------------------------------+
+
+```{r}
+for (i in 1:4){
+  VR <- sum(retACT1 [(WE+1):length(retACT1 )]< -VaR[(WE+1):length(retACT1 ),i])/(p*(length(retACT1 )-WE))
+  s <- sd(VaR[(WE+1):length(retACT1 ),i])
+  cat(i,"VR",VR,"VaR vol",s,"\n")
+}
+#matplot(cbind(retACT1 ,VaR),type='l',col=1:5,las=1,ylab="",lty=1:5) 
+# Tiene más sentido dibujar el valor negativo (cota inferior)
+matplot(cbind(retACT1 ,-VaR),type='l',col=1:5,las=1,ylab="",lty=1:5)
+legend("topleft",legend=c("Returns","EWMA","MA","HS","GARCH"),lty=1:5,col=1:5,bty="n",cex=0.5)
+
+```
+
++-----------+-----------------------+-------------+--------------------------------------+-----------+
+| VR        | Interpretacion        | VaR vol     | Interpretacion                       | Modelo    |
++===========+=======================+=============+======================================+===========+
+| 0.8763505 | VR \< 1 → conservador | 0.01508193  | VaR vol bajo→ muy estable            | EWMA      |
++-----------+-----------------------+-------------+--------------------------------------+-----------+
+| 0.8883553 | VR \< 1 → conservador | 0.004651808 | VaR vol baja → muy estable           | MA        |
++-----------+-----------------------+-------------+--------------------------------------+-----------+
+| 1.044418  | VR ≈ 1                | 0.00440465  | depende mucho del pasado reciente    | HS        |
+|           |                       |             |                                      |           |
+|           | Buen ajuste           |             |                                      |           |
++-----------+-----------------------+-------------+--------------------------------------+-----------+
+| 0.9243697 | VR cercano a 1        | 0.01421135  | buen equilibrio reacción/estabilidad | GARCH     |
++-----------+-----------------------+-------------+--------------------------------------+-----------+
+
+-   El VaR vol **tamaño típico del VaR** cuánto capital estás reservando **en promedio**
+
+$$
+\text{VaR}_{\text{vol}} = \frac{1}{T} \sum_{t} \text{VaR}_t
+$$
+
+-   VaR vol alto → VR \< 1
+
+-   VaR vol bajo → VR \> 1
+
+El gráfico compara lo que el modelo esperaba perder frente a lo que ocurrió realmente: la **línea azul** son los rendimientos diarios del mercado, la **línea roja** es el límite de pérdida máxima estimada (VaR) que se adapta según la volatilidad, y los **puntos negros** son los fallos del modelo, es decir, los días en que las pérdidas fueron mayores a lo previsto. En resumen, el gráfico muestra como de bien predice el riesgo tu modelo GARCH ante los movimientos reales del precio.
+
+El modelo GARCH captura dinámicamente la volatilidad, adaptando el umbral de riesgo a las condiciones del mercado.
+
+Sin embargo, se observan agrupaciones de violaciones en periodos de alta volatilidad, lo que sugiere que el modelo podría mejorar utilizando una distribución t-Student para capturar mejor los eventos extremos.
+
+#### Pequeña guia
+
+```{r}
+# VR=1 is expected. A useful rule of thumb
+# If VR2[0.8, 1.2] the model is GOOD
+# If VR2[0.5, 0.8] or VR2[1.2, 1.5] the model is ACCEPTABLE
+# If VR2[0.3, 0.5] or VR2[1.5, 2] the model is BAD
+# If VR<0.5 or VR>2 the model is USELESS
+
+```
+
+### Test de Bernoulli e independencia
+
+-   Test de Bernoulli
+
+Se busca no rechazar H0, es decir, que el ratio de violaciones obtenido para el activo no sea significativamente diferente del 5% puesto como objetivo.
+
+$H_0:\; P(\text{violación}) = p$\
+$H_1:\; P(\text{violación}) \neq p$
+
+-   Test de Independencia
+
+    De nuevo, se busca no rechazar H0, para qeue así los periodos en donde se podría violar este valor en riesgo obtenido no estén relacionados entre sí, si no que se puedan considerar independientes.
+
+    -   **H₀**: las violaciones son **independientes en el tiempo**
+
+    -   **H₁**: hay **clustering** de violaciones
+
+```{r}
+bern_test<-function(p,v){
+  lv<-length(v)
+  sv<-sum(v)
+  al<-log(p)*sv+log(1-p)*(lv-sv)
+  bl<-log(sv/lv)*sv +log(1-sv/lv)*(lv-sv)
+  return(-2*(al-bl))
+}
+#______________________________________________#
+# H0: independencia (no hay rachas en la secuencia de 0's y 1's)
+# Independence test in R
+ind_test<-function(V){
+  J<-matrix(ncol=4,nrow=length(V))
+  for (i in 2:length(V)){
+    J[i,1]<-V[i-1]==0 & V[i]==0
+    J[i,2]<-V[i-1]==0 & V[i]==1
+    J[i,3]<-V[i-1]==1 & V[i]==0
+    J[i,4]<-V[i-1]==1 & V[i]==1
+  }
+  V_00<-sum(J[,1],na.rm=TRUE)
+  V_01<-sum(J[,2],na.rm=TRUE)
+  V_10<-sum(J[,3],na.rm=TRUE)
+  V_11<-sum(J[,4],na.rm=TRUE)
+  p_00<-V_00/(V_00+V_01)
+  p_01<-V_01/(V_00+V_01)
+  p_10<-V_10/(V_10+V_11)
+  p_11<-V_11/(V_10+V_11)
+  hat_p<-(V_01+V_11)/(V_00+V_01+V_10+V_11)
+  al <- log(1-hat_p)*(V_00+V_10) + log(hat_p)*(V_01+V_11)
+  bl <- log(p_00)*V_00 + log(p_01)*V_01 + log(p_10)*V_10 + log(p_11)*V_11
+  return(-2*(al-bl))
+}
+#______________________________________________#
+W1<-WE+1
+VaRa<-VaR[W1:length(retACT1 ),] 
+#dim(VaRa)       # 3190 x 4
+#length(retACT1 )  # 4190
+m<-c("EWMA","MA","HS","GARCH")
+for (i in 1:4){
+  q<- retACT1 [W1:length(retACT1 )]< -VaR[W1:length(retACT1 ),i]  # TRUE if condition holds, FALSE otw.
+  v<-VaRa*0
+  v[q,i]<-1
+  ber<-bern_test(p,v[,i])
+  ind<-ind_test(v[,i])
+  cat(i,m[i],'Bernoulli',ber,1-pchisq(ber,1),"independence",ind,1-pchisq(ind,1),"\n")
+}
+```
+
++---------+--------------------+------------------+--------------------------------------------------------------------------------------------------+
+| Modelo  | Bernoulli          | Independencia    | Conclusion                                                                                       |
++=========+====================+==================+==================================================================================================+
+| EWMA    | **NO rechazas H₀** | RECHAZAS H₀      | Modelo **bien calibrado**                                                                        |
++---------+--------------------+------------------+--------------------------------------------------------------------------------------------------+
+| MA      | **NO rechazas H₀** | RECHAZAS H₀      | Frecuencia incorrecta de violaciones -\> VaR **demasiado conservador** (ya lo viste con VR \< 1) |
++---------+--------------------+------------------+--------------------------------------------------------------------------------------------------+
+| HS      | NO rechazas        | RECHAZAS H₀      | Buen comportamiento global                                                                       |
++---------+--------------------+------------------+--------------------------------------------------------------------------------------------------+
+| GARCH   | NO rechazas H₀     | **N**RECHAZAS H₀ | Muy buen modelo (frecuencia + orden temporal)                                                    |
++---------+--------------------+------------------+--------------------------------------------------------------------------------------------------+
+
+Los modelos superan el test de cobertura incondicional de Kupiec, indicando una frecuencia adecuada de violaciones. Sin embargo, todos fallan el test de independencia de Christoffersen, lo que evidencia clustering de violaciones y una deficiente adaptación a cambios en la volatilidad del mercado.
+
+$$
+H_0:\; P(\text{violación}) = 0{,}05
+$$
+
+> *Aunque los modelos superan el test de cobertura incondicional, el rechazo del test de independencia indica clustering de violaciones, lo que revela una deficiente adaptación a la dinámica temporal del riesgo.*
