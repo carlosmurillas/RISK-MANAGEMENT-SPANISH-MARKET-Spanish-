@@ -1,0 +1,340 @@
+---
+title: "TAREA 2 - Predicción ARMA-GARCH"
+subtitle: "Activo: BBVA"
+format: html
+editor: visual
+embed-resources: true
+---
+
+## 1. Configuración inicial
+
+```{r setup, message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(tseries)
+library(zoo)
+library(quantmod)
+library(forecast)
+library(rugarch)
+library(xts)
+library(ggplot2)
+
+rends_clean <- read.csv("rends_limpio.csv", stringsAsFactors = FALSE)
+rends_clean$date <- as.Date(rends_clean$date)
+```
+
+## 2. Datos BBVA
+
+```{r datos}
+BBVA <- xts(rends_clean$BBVA.MC_Adj, order.by = rends_clean$date)
+colnames(BBVA) <- "BBVA"
+BBVA <- na.omit(BBVA)
+
+data.frame(
+  Inicio = as.character(start(BBVA)),
+  Fin = as.character(end(BBVA)),
+  Observaciones = length(BBVA)
+)
+```
+
+La serie de rendimientos de BBVA abarca desde el año 2000 hasta diciembre de 2024, con más de 6600 observaciones diarias. Esta extensión temporal permite capturar diferentes ciclos de mercado y episodios de volatilidad.
+
+```{r grafico_bbva}
+plot(BBVA, main = "Rendimientos BBVA", ylab = "Rendimiento", col = "steelblue")
+```
+
+Se observa el patrón típico de clustering de volatilidad: períodos de alta volatilidad (crisis 2008, COVID-19 2020) seguidos de períodos de menor volatilidad.
+
+## 3. División in-sample / out-of-sample
+
+```{r division_muestras}
+ultimo_anio <- as.numeric(format(end(BBVA), "%Y"))
+
+WE.in <- window(BBVA, end = paste0(ultimo_anio, "-08-31"))
+WE.out <- window(BBVA, start = paste0(ultimo_anio, "-09-01"), 
+                       end = paste0(ultimo_anio, "-09-30"))
+timefor <- index(WE.out)
+
+data.frame(
+  Muestra = c("In-sample (hasta agosto)", "Out-of-sample (septiembre)"),
+  Observaciones = c(length(WE.in), length(WE.out))
+)
+```
+
+Se reserva el mes de septiembre como muestra out-of-sample para evaluar la capacidad predictiva de los modelos. Esta estrategia permite una comparación justa entre modelos.
+
+## 4. Función auto.armagarch
+
+Esta función evalúa todas las combinaciones ARMA(p,q)-GARCH(m,r) y selecciona por **RMSE y MAE de predicción**, no por criterios de información.
+
+```{r funcion_auto_armagarch}
+auto.armagarch.prediction <- function(serie_completa, fecha_fin_insample, 
+                                       fechas_outsample, maxorder = 2) {
+  
+  resultados <- data.frame()
+  modelo_id <- 1
+  
+  for (arp in 0:maxorder) {
+    for (maq in 0:maxorder) {
+      for (archp in 0:maxorder) {
+        for (garchq in 0:maxorder) {
+          
+          if (archp == 0 && garchq != 0) next
+          
+          mod.spec <- ugarchspec(
+            variance.model = list(model = "sGARCH", garchOrder = c(archp, garchq)),
+            mean.model = list(armaOrder = c(arp, maq), include.mean = TRUE),
+            distribution.model = "norm"
+          )
+          
+          WE.in <- window(serie_completa, end = fecha_fin_insample)
+          garchmodel <- try(ugarchfit(mod.spec, data = WE.in, solver = "hybrid"), 
+                           silent = TRUE)
+          
+          if ('try-error' %in% class(garchmodel) || garchmodel@fit$convergence != 0) next
+          
+          out_size <- length(fechas_outsample)
+          garchmodel_roll <- try(
+            ugarchfit(mod.spec, data = serie_completa, 
+                     out.sample = out_size, solver = "hybrid"),
+            silent = TRUE
+          )
+          
+          if ('try-error' %in% class(garchmodel_roll) || 
+              garchmodel_roll@fit$convergence != 0) next
+          
+          forecast_roll <- ugarchforecast(garchmodel_roll, 
+                                          n.ahead = 1, 
+                                          n.roll = out_size - 1, 
+                                          out.sample = out_size)
+          
+          pred_media <- as.numeric(fitted(forecast_roll))
+          pred_var <- as.numeric(sigma(forecast_roll))^2
+          
+          T_insample <- garchmodel_roll@model$modeldata$T
+          real_returns <- as.numeric(serie_completa[(T_insample + 1):(T_insample + out_size)])
+          real_var <- real_returns^2
+          
+          RMSE_media <- sqrt(mean((pred_media - real_returns)^2, na.rm = TRUE))
+          MAE_media <- mean(abs(pred_media - real_returns), na.rm = TRUE)
+          RMSE_var <- sqrt(mean((pred_var - real_var)^2, na.rm = TRUE))
+          MAE_var <- mean(abs(pred_var - real_var), na.rm = TRUE)
+          
+          resultados <- rbind(resultados, data.frame(
+            ID = modelo_id, AR = arp, MA = maq, ARCH = archp, GARCH = garchq,
+            AIC = infocriteria(garchmodel)[1], BIC = infocriteria(garchmodel)[2],
+            RMSE_media = RMSE_media, MAE_media = MAE_media,
+            RMSE_var = RMSE_var, MAE_var = MAE_var
+          ))
+          modelo_id <- modelo_id + 1
+        }
+      }
+    }
+  }
+  
+  list(
+    todos_resultados = resultados,
+    mejor_media_rmse = resultados[which.min(resultados$RMSE_media), ],
+    mejor_media_mae = resultados[which.min(resultados$MAE_media), ],
+    mejor_var_rmse = resultados[which.min(resultados$RMSE_var), ],
+    mejor_var_mae = resultados[which.min(resultados$MAE_var), ],
+    mejor_aic = resultados[which.min(resultados$AIC), ]
+  )
+}
+```
+
+## 5. Ejecución
+
+```{r ejecucion, warning=FALSE, message=FALSE}
+fecha_fin_in <- paste0(ultimo_anio, "-08-31")
+
+resultados_pred <- auto.armagarch.prediction(
+  serie_completa = BBVA,
+  fecha_fin_insample = fecha_fin_in,
+  fechas_outsample = timefor,
+  maxorder = 2
+)
+```
+
+Se han evaluado todas las combinaciones hasta ARMA(2,2)-GARCH(2,2), excluyendo los modelos GARCH(0,q) que son degenerados.
+
+## 6. Tabla de resultados
+
+```{r tabla_resultados}
+res_ord <- resultados_pred$todos_resultados[order(resultados_pred$todos_resultados$RMSE_var), ]
+knitr::kable(res_ord[, c("AR", "MA", "ARCH", "GARCH", "RMSE_media", "MAE_media", "RMSE_var", "MAE_var")], 
+             caption = "Modelos ordenados por RMSE de varianza",
+             digits = 6, row.names = FALSE)
+```
+
+La tabla muestra que los modelos con componente GARCH(1,1) o GARCH(1,2) ofrecen las mejores predicciones de varianza. Los modelos ARCH puros (sin componente GARCH) presentan peor rendimiento predictivo.
+
+## 7. Mejor modelo para la media
+
+```{r mejor_media}
+mejor_media <- resultados_pred$mejor_media_rmse
+
+data.frame(
+  Modelo = paste0("ARMA(", mejor_media$AR, ",", mejor_media$MA, 
+                  ")-GARCH(", mejor_media$ARCH, ",", mejor_media$GARCH, ")"),
+  RMSE = round(mejor_media$RMSE_media, 6),
+  MAE = round(mejor_media$MAE_media, 6)
+)
+```
+
+El mejor modelo para predecir la **media** es un GARCH sin componente ARMA. Esto confirma la **Hipótesis de Mercados Eficientes (HME)**: los rendimientos pasados no ayudan a predecir los rendimientos futuros, por lo que añadir términos AR o MA no mejora la predicción.
+
+## 8. Mejor modelo para la varianza
+
+```{r mejor_varianza}
+mejor_var <- resultados_pred$mejor_var_rmse
+
+data.frame(
+  Modelo = paste0("ARMA(", mejor_var$AR, ",", mejor_var$MA, 
+                  ")-GARCH(", mejor_var$ARCH, ",", mejor_var$GARCH, ")"),
+  RMSE = round(mejor_var$RMSE_var, 8),
+  MAE = round(mejor_var$MAE_var, 8)
+)
+```
+
+El mejor modelo para predecir la **varianza** es GARCH(1,2). A diferencia de la media, la volatilidad es predecible debido al fenómeno de **clustering de volatilidad**: períodos de alta volatilidad tienden a seguirse de más volatilidad alta.
+
+## 9. ¿Coinciden los modelos?
+
+```{r comparacion_media_varianza}
+coinciden <- mejor_media$ID == mejor_var$ID
+
+data.frame(
+  Pregunta = "¿El mejor modelo para media = mejor para varianza?",
+  Respuesta = ifelse(coinciden, "Sí", "No"),
+  Modelo_Media = paste0("GARCH(", mejor_media$ARCH, ",", mejor_media$GARCH, ")"),
+  Modelo_Varianza = paste0("GARCH(", mejor_var$ARCH, ",", mejor_var$GARCH, ")")
+)
+```
+
+Los modelos **no coinciden**. Este resultado es esperado porque:
+
+-   **Media**: Difícil de predecir (HME), el modelo más simple suele funcionar mejor.
+-   **Varianza**: Predecible y persistente, requiere modelos más sofisticados para capturar la dinámica.
+
+## 10. Comparación con Tarea 2.1
+
+En la Tarea 2.1 se identificó el mejor modelo de ajuste. Todos los criterios de información (AIC, BIC, Shibata, Hannan-Quinn) seleccionaron el mismo modelo: **GARCH(1,1)**.
+
+```{r comparacion_tarea21}
+# Modelo GARCH(1,1) - Seleccionado por TODOS los criterios en Tarea 2.1
+modelo_garch11 <- resultados_pred$todos_resultados[
+  resultados_pred$todos_resultados$AR == 0 & 
+  resultados_pred$todos_resultados$MA == 0 & 
+  resultados_pred$todos_resultados$ARCH == 1 & 
+  resultados_pred$todos_resultados$GARCH == 1, ]
+
+# Mejor modelo de predicción (encontrado en este análisis)
+mejor_prediccion <- mejor_var
+
+# Tabla comparativa
+comparacion <- data.frame(
+  Modelo = c("GARCH(1,1) - Tarea 2.1 (Ajuste)",
+             paste0("GARCH(", mejor_prediccion$ARCH, ",", mejor_prediccion$GARCH, ") - Mejor Predicción")),
+  Criterio = c("AIC/BIC/SH/HQ", "RMSE/MAE"),
+  RMSE_media = c(modelo_garch11$RMSE_media, mejor_prediccion$RMSE_media),
+  MAE_media = c(modelo_garch11$MAE_media, mejor_prediccion$MAE_media),
+  RMSE_var = c(modelo_garch11$RMSE_var, mejor_prediccion$RMSE_var),
+  MAE_var = c(modelo_garch11$MAE_var, mejor_prediccion$MAE_var)
+)
+
+knitr::kable(comparacion, digits = 8, 
+             caption = "Comparación: Modelo de ajuste (Tarea 2.1) vs Mejor modelo predictivo")
+```
+
+### Interpretación
+
+```{r interpretacion_comparacion}
+# Diferencia porcentual respecto al mejor modelo de predicción
+dif_garch11 <- (modelo_garch11$RMSE_var - mejor_prediccion$RMSE_var) / mejor_prediccion$RMSE_var * 100
+
+data.frame(
+  Modelo = "GARCH(1,1) vs Mejor Predicción",
+  Diferencia_RMSE_var = paste0(round(dif_garch11, 4), "%"),
+  Conclusion = ifelse(abs(dif_garch11) < 1, "Prácticamente equivalentes", "Diferencia notable")
+)
+```
+
+El modelo **GARCH(1,1)** seleccionado en la Tarea 2.1 por criterios de información presenta un error de predicción **casi idéntico** al modelo óptimo de predicción. Esto valida que el criterio de parsimonia funciona bien en la práctica.
+
+## 11. Visualización
+
+```{r graficos, fig.width=10, fig.height=6}
+resultados_df <- resultados_pred$todos_resultados
+resultados_df$Modelo <- paste0("ARMA(", resultados_df$AR, ",", resultados_df$MA, 
+                                ")-G(", resultados_df$ARCH, ",", resultados_df$GARCH, ")")
+
+top10 <- resultados_df[order(resultados_df$RMSE_var), ][1:10, ]
+
+par(mar = c(10, 4, 3, 1))
+barplot(top10$RMSE_var, 
+        names.arg = top10$Modelo,
+        las = 2, 
+        col = "steelblue",
+        main = "Top 10 Modelos - RMSE Predicción Varianza",
+        ylab = "RMSE")
+```
+
+El gráfico muestra que las diferencias entre los mejores modelos son mínimas.
+
+## 12. Guardar resultados
+
+```{r guardar}
+save(resultados_pred, file = "resultados_prediccion_BBVA.RData")
+write.csv(resultados_pred$todos_resultados, 
+          file = "resultados_prediccion_BBVA.csv", 
+          row.names = FALSE)
+```
+
+------------------------------------------------------------------------
+
+## Conclusiones
+
+### Resultados obtenidos
+
+Tras evaluar 53 combinaciones de modelos ARMA(p,q)-GARCH(m,r) con órdenes de 0 a 2, se obtuvieron los siguientes resultados:
+
+**Predicción de la media condicional:** El modelo que minimiza el error de predicción de la media es GARCH(2,2), con un RMSE de 0.01165 y un MAE de 0.00927. Llama la atención que este modelo no incluye ningún componente autorregresivo ni de media móvil en la ecuación de la media (AR=0, MA=0). Esto indica que los rendimientos pasados de BBVA no aportan información útil para predecir los rendimientos futuros.
+
+**Predicción de la volatilidad:** El modelo óptimo para predecir la varianza condicional es GARCH(1,2), con un RMSE de 0.000217095 y un MAE de 0.000201994. La diferencia con el modelo GARCH(1,1) es mínima: este último presenta un RMSE de 0.000217127, lo que supone una diferencia de apenas el 0.015%.
+
+### Análisis de los resultados
+
+**Sobre la predicción de la media:** Los errores de predicción de la media son considerablemente altos en términos relativos. Un RMSE de 0.01165 frente a rendimientos diarios que típicamente oscilan en torno al 1-2% implica que el modelo apenas mejora una predicción ingenua basada en la media histórica. Este resultado era esperado y confirma lo que predice la Hipótesis de Mercados Eficientes: en un mercado líquido como el de BBVA, los precios incorporan rápidamente toda la información disponible, haciendo prácticamente imposible predecir los movimientos futuros a partir del historial de precios.
+
+**Sobre la predicción de la volatilidad:** A diferencia de la media, la volatilidad sí presenta patrones predecibles. El RMSE de la varianza (0.000217) es un orden de magnitud inferior al de la media cuando se normaliza por las magnitudes típicas de cada variable. Esto refleja el conocido fenómeno de clustering de volatilidad: los períodos de alta volatilidad tienden a agruparse, y el modelo GARCH captura esta persistencia de forma efectiva.
+
+**¿Coinciden los modelos óptimos para media y varianza?** No coinciden. El mejor modelo para la media incorpora un componente GARCH(2,2), mientras que para la varianza el óptimo es GARCH(1,2). Esto tiene sentido desde un punto de vista teórico: la ecuación de la varianza y la de la media tienen objetivos distintos, y no hay razón para esperar que el mismo modelo sea óptimo en ambos casos.
+
+### Comparación con el modelo de la Tarea 2.1
+
+En la Tarea 2.1, todos los criterios de información (AIC, BIC, Shibata y Hannan-Quinn) seleccionaron unánimemente el modelo GARCH(1,1) como el mejor ajuste para la serie de BBVA. La pregunta clave es: ¿este modelo que mejor ajusta también predice mejor?
+
+Los resultados muestran que el GARCH(1,1) tiene un RMSE de predicción de varianza de 0.000217127, mientras que el mejor modelo predictivo GARCH(1,2) alcanza 0.000217095. La diferencia absoluta es de apenas 0.000000032, lo que representa un 0.015% de mejora. En términos prácticos, esta diferencia es irrelevante.
+
+Esta equivalencia entre el modelo de ajuste y el de predicción sugiere que, al menos para BBVA, los criterios de información tradicionales hacen un buen trabajo seleccionando modelos que generalizan bien fuera de muestra. No se observa evidencia de sobreajuste significativo.
+
+### Implicaciones prácticas
+
+1.  **Para la gestión de riesgos:** El modelo GARCH(1,1) es suficiente para obtener predicciones fiables de volatilidad. Añadir parámetros adicionales no justifica la complejidad extra.
+
+2.  **Para trading:** Intentar predecir rendimientos basándose en modelos ARMA-GARCH no es una estrategia viable. Los componentes AR y MA no aportan valor predictivo, confirmando que las oportunidades de arbitraje basadas en patrones históricos de precios son inexistentes o despreciables.
+
+3.  **Sobre el principio de parsimonia:** El GARCH(1,1), siendo el modelo más simple de la familia GARCH, demuestra ser tan efectivo como especificaciones más complejas. Esto refuerza la idea de que, en finanzas, los modelos parsimoniosos suelen generalizar mejor.
+
+### Respuesta a las preguntas del enunciado
+
+1.  **¿Qué modelo predice mejor la media?** GARCH(2,2) con RMSE = 0.01165, aunque la calidad de predicción es limitada por la naturaleza impredecible de los rendimientos.
+
+2.  **¿Qué modelo predice mejor la volatilidad?** GARCH(1,2) con RMSE = 0.000217.
+
+3.  **¿Coinciden ambos modelos?** No. Cada objetivo (media vs varianza) tiene su modelo óptimo.
+
+4.  **¿Coincide el modelo que mejor ajusta con el que mejor predice?** Prácticamente sí. El GARCH(1,1) de la Tarea 2.1 difiere del óptimo predictivo en solo un 0.015%, una diferencia despreciable en la práctica.
+
+5.  **¿Qué ocurre con la media?** Se confirma la Hipótesis de Mercados Eficientes. Los términos ARMA no mejoran la predicción, indicando que los rendimientos de BBVA no presentan autocorrelación explotable.
